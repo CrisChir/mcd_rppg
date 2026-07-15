@@ -74,10 +74,6 @@ def parse_args():
                         help='Minimum face size in pixels')
     parser.add_argument('--max_face_size', type=int, default=512,
                         help='Maximum face size in pixels')
-    parser.add_argument('--min_detection_confidence', type=float, default=0.5,
-                        help='Minimum face detection confidence (0-1)')
-    parser.add_argument('--min_tracking_confidence', type=float, default=0.5,
-                        help='Minimum face tracking confidence (0-1)')
     parser.add_argument('--skip_existing', action='store_true', default=True,
                         help='Skip already processed files')
     parser.add_argument('--verbose', action='store_true', default=False,
@@ -90,7 +86,6 @@ def parse_args():
 
 def setup_directories(args):
     """Setup output directories."""
-    # Create output directories
     os.makedirs(args.output_path, exist_ok=True)
     
     if args.faces_path is None:
@@ -101,7 +96,6 @@ def setup_directories(args):
     os.makedirs(args.faces_path, exist_ok=True)
     os.makedirs(args.landmarks_path, exist_ok=True)
     
-    # Ensure errors file directory exists
     errors_dir = os.path.dirname(args.errors_file)
     if errors_dir:
         os.makedirs(errors_dir, exist_ok=True)
@@ -135,66 +129,41 @@ def save_errors_file(errors, args):
 
 def get_video_list(args):
     """Get list of videos to process."""
-    # Find all AVI files
     videos = sorted(glob(f'{args.input_path}*.avi'))
     
     if not videos:
         print(f"Warning: No AVI files found in {args.input_path}")
         return []
     
-    # Filter by camera ID if specified
     if args.camera_id is not None:
         videos = [v for v in videos if f'camera_{args.camera_id}' in v or 
                   f'cam_{args.camera_id}' in v]
     
-    # Apply index range
     if args.end_idx is not None:
         videos = videos[args.start_idx:args.end_idx]
     else:
         videos = videos[args.start_idx:]
     
-    # For this script, process every 3rd video starting from index 0
     videos = videos[0::3]
     
     if args.verbose:
         print(f"Found {len(videos)} videos to process (camera {args.camera_id})")
-        print(f"First video: {videos[0] if videos else 'None'}")
-        print(f"Last video: {videos[-1] if videos else 'None'}")
     
     return videos
 
 
 def process_single_video(video_file, args, errors):
-    """
-    Process a single video file using MediaPipe.
-    
-    Args:
-        video_file: Path to video file
-        args: Command line arguments
-        errors: DataFrame to log errors
-    
-    Returns:
-        True if successful, False otherwise
-    """
+    """Process a single video file using MediaPipe."""
     video_filename = os.path.basename(video_file)
     
-    # Generate output paths
-    face_file = os.path.join(
-        args.faces_path,
-        os.path.splitext(video_filename)[0] + '.npy'
-    )
-    landmarks_file = os.path.join(
-        args.landmarks_path,
-        os.path.splitext(video_filename)[0] + '.npy'
-    )
+    face_file = os.path.join(args.faces_path, os.path.splitext(video_filename)[0] + '.npy')
+    landmarks_file = os.path.join(args.landmarks_path, os.path.splitext(video_filename)[0] + '.npy')
     
-    # Check if already processed
     if args.skip_existing and os.path.isfile(face_file) and os.path.isfile(landmarks_file):
         if args.verbose:
             print(f"Skipping {video_file} (already processed)")
         return True
     
-    # Check if video is in errors
     if video_file in errors['video_file'].values:
         if args.verbose:
             print(f"Skipping {video_file} (previously failed)")
@@ -204,27 +173,21 @@ def process_single_video(video_file, args, errors):
         if args.verbose:
             print(f"Processing {video_file}")
         
-        # Load video
         video = rppglib.data_utils.load_video(video_file)
         
         if args.debug:
             print(f"  Video shape: {video.shape}")
-            print(f"  Video dtype: {video.dtype}")
         
-        # Process video using MediaPipe (face detection and cropping)
         processed_video, landmarks = rppglib.face_utils.process_video(
             video,
             min_face_size=args.min_face_size,
-            max_face_size=args.max_face_size,
-            min_detection_confidence=args.min_detection_confidence,
-            min_tracking_confidence=args.min_tracking_confidence
+            max_face_size=args.max_face_size
         )
         
         if args.debug:
             print(f"  Processed video shape: {processed_video.shape}")
             print(f"  Landmarks shape: {landmarks.shape}")
         
-        # Save results
         np.save(face_file, processed_video)
         np.save(landmarks_file, landmarks)
         
@@ -235,22 +198,14 @@ def process_single_video(video_file, args, errors):
         return True
         
     except RuntimeError as e:
-        error_row = {
-            'video_file': video_file,
-            'error_type': 'RuntimeError',
-            'error_msg': str(e)
-        }
+        error_row = {'video_file': video_file, 'error_type': 'RuntimeError', 'error_msg': str(e)}
         errors = pd.concat([errors, pd.DataFrame([error_row])], ignore_index=True)
         save_errors_file(errors, args)
         print(f"  Error processing {video_file}: {e}")
         return False
         
     except Exception as e:
-        error_row = {
-            'video_file': video_file,
-            'error_type': str(type(e).__name__),
-            'error_msg': str(e)
-        }
+        error_row = {'video_file': video_file, 'error_type': str(type(e).__name__), 'error_msg': str(e)}
         errors = pd.concat([errors, pd.DataFrame([error_row])], ignore_index=True)
         save_errors_file(errors, args)
         print(f"  Error processing {video_file}: {type(e).__name__}: {e}")
@@ -270,10 +225,7 @@ def main():
     print(f"Output: {args.output_path}")
     print("=" * 80)
     
-    # Load errors file
     errors = load_errors_file(args)
-    
-    # Get video list
     videos = get_video_list(args)
     
     if not videos:
@@ -281,14 +233,8 @@ def main():
         return
     
     print(f"\nTotal videos to process: {len(videos)}")
-    print(f"Starting from index: {args.start_idx}")
-    if args.end_idx is not None:
-        print(f"Ending at index: {args.end_idx}")
-    print(f"Min detection confidence: {args.min_detection_confidence}")
-    print(f"Min tracking confidence: {args.min_tracking_confidence}")
     print()
     
-    # Process videos
     success_count = 0
     failure_count = 0
     
@@ -299,7 +245,6 @@ def main():
         else:
             failure_count += 1
     
-    # Save final errors
     save_errors_file(errors, args)
     
     print("\n" + "=" * 80)
