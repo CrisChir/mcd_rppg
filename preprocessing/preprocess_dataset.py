@@ -49,8 +49,6 @@ class PreprocessingConfig:
         self.padding = 20
         
         # Face detection parameters (MediaPipe)
-        self.min_detection_confidence = 0.5
-        self.min_tracking_confidence = 0.5
         self.num_faces = 1
         self.running_mode = vision.RunningMode.VIDEO
         
@@ -88,10 +86,6 @@ def parse_args():
                         help='Frames per sample')
     parser.add_argument('--stride', type=int, default=64,
                         help='Step between samples')
-    parser.add_argument('--min_detection_confidence', type=float, default=0.5,
-                        help='MediaPipe min detection confidence')
-    parser.add_argument('--min_tracking_confidence', type=float, default=0.5,
-                        help='MediaPipe min tracking confidence')
     parser.add_argument('--verbose', action='store_true', default=False,
                         help='Enable verbose logging')
     
@@ -333,22 +327,26 @@ def load_video(video_path: str, start_frame: int = 0, end_frame = None):
 
 
 def initialize_mediapipe(config: PreprocessingConfig) -> vision.FaceLandmarker:
-    """Initialize MediaPipe Face Landmarker."""
+    """Initialize MediaPipe Face Landmarker with correct API."""
     print("Initializing MediaPipe Face Landmarker...")
     
+    # Create base options
     base_options = python.BaseOptions(model_asset_path=None)
+    
+    # Create face landmarker options - CORRECTED: no min_detection_confidence here
     options = vision.FaceLandmarkerOptions(
         base_options=base_options,
         running_mode=config.running_mode,
-        num_faces=config.num_faces,
-        min_detection_confidence=config.min_detection_confidence,
-        min_tracking_confidence=config.min_tracking_confidence,
-        output_face_blendshapes=False,
-        output_facial_transformation_matrixes=False
+        num_faces=config.num_faces
     )
+    
+    # Create detector
     detector = vision.FaceLandmarker.create_from_options(options)
     
     print("✅ MediaPipe Face Landmarker initialized!")
+    print(f"   Running mode: {config.running_mode}")
+    print(f"   Num faces: {config.num_faces}")
+    
     return detector
 
 
@@ -662,8 +660,6 @@ def main():
     config = PreprocessingConfig()
     config.dataset_path = args.dataset_path
     config.output_path = args.output_path
-    config.min_detection_confidence = args.min_detection_confidence
-    config.min_tracking_confidence = args.min_tracking_confidence
     config.window_size = args.window_size
     config.stride = args.stride
     
