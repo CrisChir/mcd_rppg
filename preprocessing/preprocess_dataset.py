@@ -5,6 +5,12 @@ MCD-rPPG Dataset Preprocessing Script
 A consolidated script for preprocessing the MCD-rPPG dataset using MediaPipe.
 This script handles the actual dataset structure with .PW files, ppg_sync, and meta files.
 
+IMPORTANT: Uses SIMPLE RATIO-BASED SYNCHRONIZATION to match original preprocessing scripts.
+- PPG at 100 Hz, Video at 30 FPS
+- Ratio: 100/30 = 3.333... PPG samples per video frame
+- Direct mapping: ppg_chunk = ppg[start_frame * 3.333 : end_frame * 3.333]
+- NO complex timestamp parsing (matches original scripts)
+
 Usage:
     python preprocess_dataset.py --dataset_path /path/to/mcd_rppg --output_path ./preprocessed_data --limit 10
 
@@ -43,10 +49,10 @@ class PreprocessingConfig:
         self.output_path = "./preprocessed_data"
         
         # Processing parameters
-        self.window_size = 256
-        self.stride = 64
-        self.target_size = (128, 128)
-        self.padding = 20
+        self.window_size = 256      # Frames per sample (MUST match original)
+        self.stride = 64            # Step between samples (MUST match original)
+        self.target_size = (128, 128)  # Target face size
+        self.padding = 20           # Padding around face
         
         # Face detection parameters (MediaPipe)
         self.num_faces = 1
@@ -57,10 +63,10 @@ class PreprocessingConfig:
         self.max_face_size = 512
         
         # Signal processing
-        self.ppg_low_freq = 0.75
-        self.ppg_high_freq = 4.0
-        self.frame_rate = 30.0
-        self.ppg_rate = 100.0
+        self.ppg_low_freq = 0.75    # Hz
+        self.ppg_high_freq = 4.0    # Hz
+        self.frame_rate = 30.0     # FPS (MUST match original)
+        self.ppg_rate = 100.0      # Hz (MUST match original)
         
         # Dataset splits
         self.train_ratio = 0.8
@@ -72,7 +78,7 @@ class PreprocessingConfig:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Preprocess MCD-rPPG dataset with actual file structure',
+        description='Preprocess MCD-rPPG dataset with SIMPLE RATIO-BASED SYNCHRONIZATION',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -83,91 +89,44 @@ def parse_args():
     parser.add_argument('--limit', type=int, default=None,
                         help='Limit number of samples to process (for testing)')
     parser.add_argument('--window_size', type=int, default=256,
-                        help='Frames per sample')
+                        help='Frames per sample (MUST match original scripts)')
     parser.add_argument('--stride', type=int, default=64,
-                        help='Step between samples')
+                        help='Step between samples (MUST match original scripts)')
+    parser.add_argument('--frame_rate', type=float, default=30.0,
+                        help='Video frame rate (MUST match original)')
+    parser.add_argument('--ppg_rate', type=float, default=100.0,
+                        help='PPG sampling rate (MUST match original)')
     parser.add_argument('--verbose', action='store_true', default=False,
                         help='Enable verbose logging')
     
     return parser.parse_args()
 
 
-def parse_pw_file(pw_path: str) -> Tuple[np.ndarray, np.ndarray]:
+def parse_pw_file_simple(pw_path: str) -> np.ndarray:
     """
-    Parse .PW file format: {ppg_value}   {timestamp}
-    Returns: (ppg_values, timestamps)
+    Parse .PW file - SIMPLE VERSION.
+    
+    Since we're using ratio-based synchronization, we just need the PPG values.
+    We don't need to parse timestamps.
+    
+    Args:
+        pw_path: Path to .PW file
+    
+    Returns:
+        ppg_values: Array of PPG values
     """
     ppg_values = []
-    timestamps = []
-    
     with open(pw_path, 'r') as f:
         for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
+            parts = line.strip().split()
+            if len(parts) >= 1:
                 try:
                     ppg_values.append(float(parts[0]))
-                    timestamp_str = ' '.join(parts[1:])
-                    timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
-                    timestamps.append(timestamp)
                 except Exception as e:
                     if args.verbose:
-                        print(f"Warning: Could not parse line: {line} - {e}")
+                        print(f"Warning: Could not parse line: {line[:50]}... - {e}")
     
-    return np.array(ppg_values), np.array(timestamps)
-
-
-def parse_ppg_sync_file(sync_path: str) -> Dict[int, float]:
-    """
-    Parse ppg_sync .txt file format: {frame_number} {sync_value}
-    Returns: dict mapping frame_number to sync_value
-    """
-    sync_data = {}
-    
-    with open(sync_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    frame_num = int(parts[0])
-                    sync_value = float(parts[1])
-                    sync_data[frame_num] = sync_value
-                except Exception as e:
-                    if args.verbose:
-                        print(f"Warning: Could not parse line: {line} - {e}")
-    
-    return sync_data
-
-
-def parse_meta_file(meta_path: str) -> Dict[int, datetime]:
-    """
-    Parse meta .txt file format: {frame_number}  {timestamp}
-    Returns: dict mapping frame_number to timestamp
-    """
-    meta_data = {}
-    
-    with open(meta_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    frame_num = int(parts[0])
-                    timestamp_str = ' '.join(parts[1:])
-                    timestamp = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
-                    meta_data[frame_num] = timestamp
-                except Exception as e:
-                    if args.verbose:
-                        print(f"Warning: Could not parse line: {line} - {e}")
-    
-    return meta_data
+    return np.array(ppg_values)
 
 
 def extract_subject_id(filename: str) -> str:
@@ -330,22 +289,17 @@ def initialize_mediapipe(config: PreprocessingConfig) -> vision.FaceLandmarker:
     """Initialize MediaPipe Face Landmarker with correct API."""
     print("Initializing MediaPipe Face Landmarker...")
     
-    # Create base options
     base_options = python.BaseOptions(model_asset_path=None)
-    
-    # Create face landmarker options - CORRECTED: no min_detection_confidence here
     options = vision.FaceLandmarkerOptions(
         base_options=base_options,
         running_mode=config.running_mode,
         num_faces=config.num_faces
     )
-    
-    # Create detector
     detector = vision.FaceLandmarker.create_from_options(options)
     
-    print("✅ MediaPipe Face Landmarker initialized!")
-    print(f"   Running mode: {config.running_mode}")
-    print(f"   Num faces: {config.num_faces}")
+    print("MediaPipe Face Landmarker initialized")
+    print(f"  Running mode: {config.running_mode}")
+    print(f"  Num faces: {config.num_faces}")
     
     return detector
 
@@ -433,28 +387,6 @@ def process_frame(frame, detector, frame_idx, prev_landmarks=None, config=None):
     return face, landmarks
 
 
-def align_ppg_with_video(ppg_values, ppg_timestamps, meta_data, frame_rate=30.0):
-    """
-    Align PPG signal with video frames using timestamps from meta file.
-    Returns: ppg_signal aligned with video frames
-    """
-    if len(meta_data) == 0 or len(ppg_timestamps) == 0:
-        return np.zeros(len(meta_data))
-    
-    # Convert timestamps to seconds since first timestamp
-    first_ppg_time = ppg_timestamps[0]
-    first_meta_time = list(meta_data.values())[0]
-    
-    ppg_seconds = [(ts - first_ppg_time).total_seconds() for ts in ppg_timestamps]
-    meta_seconds = [(ts - first_meta_time).total_seconds() for ts in meta_data.values()]
-    
-    # Interpolate PPG values at video frame timestamps
-    interp_func = interp1d(ppg_seconds, ppg_values, kind='linear', fill_value='extrapolate')
-    aligned_ppg = interp_func(meta_seconds)
-    
-    return aligned_ppg
-
-
 def bandpass_filter(signal, low_freq, high_freq, fs, order=4):
     """Apply bandpass filter to signal."""
     nyquist = 0.5 * fs
@@ -467,35 +399,65 @@ def bandpass_filter(signal, low_freq, high_freq, fs, order=4):
 
 def preprocess_ppg(ppg, config):
     """Preprocess PPG signal."""
-    ppg_filtered = bandpass_filter(ppg, config.ppg_low_freq, config.ppg_high_freq, config.ppg_rate)
+    ppg_filtered = bandpass_filter(
+        ppg,
+        config.ppg_low_freq,
+        config.ppg_high_freq,
+        config.ppg_rate
+    )
     return (ppg_filtered - ppg_filtered.mean()) / ppg_filtered.std()
 
 
-def extract_chunks(video, ppg, window_size, stride, frame_rate=30.0, ppg_rate=100.0):
-    """Extract chunks from video and PPG."""
+def extract_chunks_simple(video, ppg, window_size, stride, video_fps=30.0, ppg_fps=100.0):
+    """
+    Extract chunks using SIMPLE RATIO-BASED SYNCHRONIZATION.
+    
+    This matches the ORIGINAL preprocessing scripts approach:
+    - PPG at 100 Hz, Video at 30 FPS
+    - Ratio: 100/30 = 3.333... PPG samples per video frame
+    - Direct mapping without complex timestamp parsing
+    
+    Args:
+        video: Video array of shape (T_video, H, W, 3)
+        ppg: PPG array of shape (T_ppg,)
+        window_size: Number of frames per chunk
+        stride: Step between chunks
+        video_fps: Video frame rate
+        ppg_fps: PPG sampling rate
+    
+    Returns:
+        video_chunks: Array of shape (N, window_size, H, W, 3)
+        ppg_chunks: Array of shape (N, window_size)
+    """
     chunks = []
     ppg_chunks = []
+    
+    # Calculate PPG samples per video frame (THIS IS THE KEY)
+    ppg_per_video_frame = ppg_fps / video_fps  # 100/30 = 3.333...
+    
     num_frames = video.shape[0]
-    ppg_per_frame = ppg_rate / frame_rate
     
     for start in range(0, num_frames - window_size + 1, stride):
         end = start + window_size
+        
+        # Extract video chunk
         video_chunk = video[start:end]
-        ppg_start = int(start * ppg_per_frame)
-        ppg_end = int(end * ppg_per_frame)
+        
+        # Extract corresponding PPG chunk using SIMPLE RATIO
+        ppg_start = int(start * ppg_per_video_frame)
+        ppg_end = int(end * ppg_per_video_frame)
         ppg_chunk = ppg[ppg_start:ppg_end]
-        if len(ppg_chunk) < window_size:
-            continue
-        if len(ppg_chunk) > window_size:
-            ppg_chunk = ppg_chunk[:window_size]
-        chunks.append(video_chunk)
-        ppg_chunks.append(ppg_chunk)
+        
+        # Ensure PPG chunk has correct length
+        if len(ppg_chunk) == window_size:
+            chunks.append(video_chunk)
+            ppg_chunks.append(ppg_chunk)
     
     return np.array(chunks), np.array(ppg_chunks)
 
 
 def process_sample(sample, detector, config):
-    """Process a single sample (video + PPG)."""
+    """Process a single sample (video + PPG) using SIMPLE RATIO-BASED synchronization."""
     result = {
         'subject_id': sample.get('subject_id', 'unknown'),
         'camera': sample.get('camera', 'unknown'),
@@ -505,7 +467,8 @@ def process_sample(sample, detector, config):
         'ppg_chunks': [],
         'landmarks': [],
         'success': False,
-        'error': None
+        'error': None,
+        'alignment_info': {}
     }
     
     try:
@@ -513,22 +476,17 @@ def process_sample(sample, detector, config):
         video = load_video(sample['video_file'])
         result['original_frames'] = len(video)
         
-        # Load and align PPG
+        # Load PPG (simple version - just values, no timestamps)
         ppg = None
         if sample.get('ppg_file') and os.path.exists(sample['ppg_file']):
-            ppg_values, ppg_timestamps = parse_pw_file(sample['ppg_file'])
+            ppg = parse_pw_file_simple(sample['ppg_file'])
             
-            # Load meta data for alignment
-            meta_data = {}
-            if sample.get('meta_file') and os.path.exists(sample['meta_file']):
-                meta_data = parse_meta_file(sample['meta_file'])
-            
-            # Align PPG with video
-            if len(meta_data) > 0:
-                ppg = align_ppg_with_video(ppg_values, ppg_timestamps, meta_data, config.frame_rate)
-            else:
-                # Fallback: use first N PPG values
-                ppg = ppg_values[:len(video)]
+            # Verify PPG/Video ratio matches expected
+            expected_ratio = config.ppg_rate / config.frame_rate
+            actual_ratio = len(ppg) / len(video)
+            result['alignment_info']['expected_ratio'] = expected_ratio
+            result['alignment_info']['actual_ratio'] = actual_ratio
+            result['alignment_info']['ratio_match'] = abs(actual_ratio - expected_ratio) < 0.01
             
             ppg = preprocess_ppg(ppg, config)
             result['original_ppg_length'] = len(ppg)
@@ -554,15 +512,15 @@ def process_sample(sample, detector, config):
         processed_video = np.array(processed_frames)
         landmarks_array = np.array(all_landmarks)
         
-        # Extract chunks
+        # Extract chunks using SIMPLE RATIO-BASED approach
         if ppg is not None and len(ppg) > 0:
-            video_chunks, ppg_chunks = extract_chunks(
+            video_chunks, ppg_chunks = extract_chunks_simple(
                 processed_video, ppg, config.window_size, config.stride,
                 config.frame_rate, config.ppg_rate
             )
         else:
             # Create dummy PPG if not available
-            video_chunks, _ = extract_chunks(
+            video_chunks, _ = extract_chunks_simple(
                 processed_video, np.zeros(len(processed_video)),
                 config.window_size, config.stride
             )
@@ -608,6 +566,13 @@ def save_preprocessed_data(processed_samples, output_path, config):
                 'processed_frames': sample['processed_frames'],
                 'video_file': sample['video_file']
             }
+            # Add alignment info
+            if 'alignment_info' in sample:
+                metadata.update({
+                    'expected_ratio': sample['alignment_info'].get('expected_ratio'),
+                    'actual_ratio': sample['alignment_info'].get('actual_ratio'),
+                    'ratio_match': sample['alignment_info'].get('ratio_match')
+                })
             all_metadata.append(metadata)
     
     if all_video_chunks:
@@ -662,14 +627,20 @@ def main():
     config.output_path = args.output_path
     config.window_size = args.window_size
     config.stride = args.stride
+    config.frame_rate = args.frame_rate
+    config.ppg_rate = args.ppg_rate
     
     print("=" * 80)
     print("MCD-rPPG Dataset Preprocessing")
+    print("Using SIMPLE RATIO-BASED SYNCHRONIZATION (matches original scripts)")
     print("=" * 80)
     print(f"Dataset path: {config.dataset_path}")
     print(f"Output path: {config.output_path}")
     print(f"Window size: {config.window_size}")
     print(f"Stride: {config.stride}")
+    print(f"Frame rate: {config.frame_rate} FPS")
+    print(f"PPG rate: {config.ppg_rate} Hz")
+    print(f"PPG/Video ratio: {config.ppg_rate/config.frame_rate:.4f}")
     print()
     
     # Load dataset
@@ -687,8 +658,6 @@ def main():
         print(f"  {i+1}. Subject: {sample['subject_id']}, Camera: {sample['camera']}, Condition: {sample['condition']}")
         print(f"     Video: {os.path.exists(sample['video_file'])}")
         print(f"     PPG: {sample['ppg_file']} ({os.path.exists(sample['ppg_file']) if sample['ppg_file'] else 'None'})")
-        print(f"     PPG Sync: {sample['ppg_sync_file']} ({os.path.exists(sample['ppg_sync_file']) if sample['ppg_sync_file'] else 'None'})")
-        print(f"     Meta: {sample['meta_file']} ({os.path.exists(sample['meta_file']) if sample['meta_file'] else 'None'})")
         print()
     
     # Initialize MediaPipe
@@ -703,24 +672,29 @@ def main():
         processed_samples.append(result)
         
         if result['success']:
-            print(f"  ✅ Sample {i+1}: {result['subject_id']}_{result['camera']}_{result['condition']} - {len(result['video_chunks'])} chunks")
+            print(f"  Sample {i+1}: {result['subject_id']}_{result['camera']}_{result['condition']} - {len(result['video_chunks'])} chunks, ratio_match={result['alignment_info'].get('ratio_match', False)}")
         else:
-            print(f"  ❌ Sample {i+1}: Error - {result['error']}")
+            print(f"  Sample {i+1}: Error - {result['error']}")
     
     success_count = sum(1 for r in processed_samples if r['success'])
     failure_count = len(processed_samples) - success_count
     
-    print(f"\n✅ Processing complete! Success: {success_count}/{len(processed_samples)}, Failed: {failure_count}")
+    print(f"\n Processing complete! Success: {success_count}/{len(processed_samples)}, Failed: {failure_count}")
     
     # Save preprocessed data
     print("\nSaving preprocessed data...")
     saved_files = save_preprocessed_data(processed_samples, config.output_path, config)
-    print("\n✅ All data saved successfully!")
+    print("\n All data saved successfully!")
     
     for key, path in saved_files.items():
         if os.path.exists(path):
             size = os.path.getsize(path) / (1024 * 1024)
             print(f"  {key}: {path} ({size:.2f} MB)")
+    
+    # Print alignment summary
+    print(f"\n Alignment Summary:")
+    ratio_matches = sum(1 for r in processed_samples if r['success'] and r['alignment_info'].get('ratio_match', False))
+    print(f"  Videos with correct PPG/Video ratio: {ratio_matches}/{success_count}")
 
 
 if __name__ == '__main__':

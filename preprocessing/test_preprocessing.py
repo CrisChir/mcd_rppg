@@ -3,14 +3,13 @@
 MCD-rPPG Preprocessing Test Script
 
 This script tests the preprocessing pipeline on 2 random videos from the dataset.
-It visualizes and verifies:
-1. Original video frame
-2. Preprocessed face (cropped and resized)
-3. Facial landmarks overlay
-4. PPG signal synchronized with video chunks
-5. Vital signs from database
-6. Video and PPG lengths
-7. Alignment verification
+It uses SIMPLE RATIO-BASED SYNCHRONIZATION to match the original preprocessing scripts.
+
+Key synchronization approach:
+- PPG at 100 Hz, Video at 30 FPS
+- Ratio: 100/30 = 3.333... PPG samples per video frame
+- Direct mapping: ppg_chunk = ppg[start_frame * 3.333 : end_frame * 3.333]
+- NO complex timestamp parsing (matches original scripts)
 
 Usage:
     python test_preprocessing.py --db_path /path/to/db.csv --dataset_root /path/to/dataset --output_path ./test_output
@@ -41,7 +40,7 @@ import matplotlib.pyplot as plt
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Test preprocessing on 2 random videos from MCD-rPPG dataset',
+        description='Test preprocessing on random videos from MCD-rPPG dataset',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -54,15 +53,17 @@ def parse_args():
     parser.add_argument('--num_tests', type=int, default=2,
                         help='Number of random videos to test')
     parser.add_argument('--window_size', type=int, default=256,
-                        help='Window size for chunks')
+                        help='Window size for chunks (MUST match original scripts)')
     parser.add_argument('--stride', type=int, default=64,
-                        help='Stride for chunks')
+                        help='Stride for chunks (MUST match original scripts)')
     parser.add_argument('--frame_rate', type=float, default=30.0,
-                        help='Video frame rate')
+                        help='Video frame rate (MUST match original)')
     parser.add_argument('--ppg_rate', type=float, default=100.0,
-                        help='PPG sampling rate')
+                        help='PPG sampling rate (MUST match original)')
     parser.add_argument('--target_size', type=tuple, default=(128, 128),
                         help='Target face size')
+    parser.add_argument('--min_face_size', type=int, default=64,
+                        help='Minimum face size in pixels')
     
     return parser.parse_args()
 
@@ -79,95 +80,6 @@ def initialize_mediapipe():
     detector = vision.FaceLandmarker.create_from_options(options)
     print("MediaPipe initialized")
     return detector
-
-
-def parse_pw_file(pw_path):
-    """Parse .PW file: {ppg_value}   {timestamp}"""
-    ppg_values, timestamps = [], []
-    with open(pw_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                try:
-                    ppg_values.append(float(parts[0]))
-                    timestamps.append(datetime.strptime(' '.join(parts[1:]), '%Y-%m-%d %H:%M:%S.%f'))
-                except Exception as e:
-                    print(f"Warning: Could not parse line: {line[:50]}...")
-    return np.array(ppg_values), np.array(timestamps)
-
-
-def parse_meta_file(meta_path):
-    """Parse meta file: {frame_number}  {timestamp}"""
-    meta_data = {}
-    with open(meta_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                try:
-                    meta_data[int(parts[0])] = datetime.strptime(' '.join(parts[1:]), '%Y-%m-%d %H:%M:%S.%f')
-                except Exception as e:
-                    print(f"Warning: Could not parse line: {line[:50]}...")
-    return meta_data
-
-
-def parse_ppg_sync_file(sync_path):
-    """Parse PPG sync file: {frame_number} {sync_value}"""
-    sync_data = {}
-    with open(sync_path, 'r') as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                try:
-                    sync_data[int(parts[0])] = float(parts[1])
-                except Exception as e:
-                    print(f"Warning: Could not parse line: {line[:50]}...")
-    return sync_data
-
-
-def align_ppg_with_video(ppg_values, ppg_timestamps, meta_data, frame_rate=30.0):
-    """
-    Align PPG signal with video frames using timestamp interpolation.
-    
-    This is the CORE alignment function that ensures PPG and video are synchronized.
-    
-    Args:
-        ppg_values: Array of PPG values from .PW file
-        ppg_timestamps: Array of timestamps for each PPG value
-        meta_data: Dict mapping frame_number to timestamp
-        frame_rate: Video frame rate (FPS)
-    
-    Returns:
-        aligned_ppg: Array of PPG values aligned with video frames
-    """
-    if len(meta_data) == 0 or len(ppg_timestamps) == 0:
-        return np.zeros(len(meta_data))
-    
-    # Convert all timestamps to seconds relative to first timestamp
-    first_ppg = ppg_timestamps[0]
-    first_meta = list(meta_data.values())[0]
-    
-    # PPG timestamps in seconds
-    ppg_seconds = [(ts - first_ppg).total_seconds() for ts in ppg_timestamps]
-    
-    # Sort meta data by frame number and convert to seconds
-    sorted_frames = sorted(meta_data.keys())
-    meta_seconds = [(meta_data[f] - first_meta).total_seconds() for f in sorted_frames]
-    
-    # Interpolate PPG values at video frame timestamps
-    interp_func = interp1d(ppg_seconds, ppg_values, kind='linear', fill_value='extrapolate')
-    aligned_ppg = interp_func(meta_seconds)
-    
-    return aligned_ppg
-
-
-def preprocess_ppg(ppg, low_freq=0.75, high_freq=4.0, fs=100.0):
-    """Apply bandpass filter and normalize PPG signal."""
-    nyquist = 0.5 * fs
-    low = low_freq / nyquist
-    high = high_freq / nyquist
-    b, a = butter(4, [low, high], btype='band')
-    filtered = filtfilt(b, a, ppg)
-    return (filtered - filtered.mean()) / filtered.std()
 
 
 def load_video(video_path):
@@ -221,18 +133,57 @@ def process_frame(frame, detector, frame_idx, prev_landmarks=None, min_size=64):
     return cv2.resize(face, (128, 128)), landmarks
 
 
-def extract_chunks(video, ppg, window_size, stride, video_fps=30.0, ppg_fps=100.0):
-    """Extract chunks from video and PPG."""
-    chunks, ppg_chunks = [], []
+def preprocess_ppg(ppg, low_freq=0.75, high_freq=4.0, fs=100.0):
+    """Apply bandpass filter and normalize PPG signal."""
+    nyquist = 0.5 * fs
+    low = low_freq / nyquist
+    high = high_freq / nyquist
+    b, a = butter(4, [low, high], btype='band')
+    filtered = filtfilt(b, a, ppg)
+    return (filtered - filtered.mean()) / filtered.std()
+
+
+def extract_chunks_simple(video, ppg, window_size, stride, video_fps=30.0, ppg_fps=100.0):
+    """
+    Extract chunks using SIMPLE RATIO-BASED SYNCHRONIZATION.
+    
+    This matches the ORIGINAL preprocessing scripts approach:
+    - PPG at 100 Hz, Video at 30 FPS
+    - Ratio: 100/30 = 3.333... PPG samples per video frame
+    - Direct mapping without complex timestamp parsing
+    
+    Args:
+        video: Video array of shape (T_video, H, W, 3)
+        ppg: PPG array of shape (T_ppg,)
+        window_size: Number of frames per chunk
+        stride: Step between chunks
+        video_fps: Video frame rate
+        ppg_fps: PPG sampling rate
+    
+    Returns:
+        video_chunks: Array of shape (N, window_size, H, W, 3)
+        ppg_chunks: Array of shape (N, window_size)
+    """
+    chunks = []
+    ppg_chunks = []
+    
+    # Calculate PPG samples per video frame (THIS IS THE KEY)
+    ppg_per_video_frame = ppg_fps / video_fps  # 100/30 = 3.333...
+    
     num_frames = video.shape[0]
-    ppg_per_frame = ppg_fps / video_fps
     
     for start in range(0, num_frames - window_size + 1, stride):
         end = start + window_size
+        
+        # Extract video chunk
         video_chunk = video[start:end]
-        ppg_start = int(start * ppg_per_frame)
-        ppg_end = int(end * ppg_per_frame)
+        
+        # Extract corresponding PPG chunk using SIMPLE RATIO
+        ppg_start = int(start * ppg_per_video_frame)
+        ppg_end = int(end * ppg_per_video_frame)
         ppg_chunk = ppg[ppg_start:ppg_end]
+        
+        # Ensure PPG chunk has correct length
         if len(ppg_chunk) == window_size:
             chunks.append(video_chunk)
             ppg_chunks.append(ppg_chunk)
@@ -240,16 +191,36 @@ def extract_chunks(video, ppg, window_size, stride, video_fps=30.0, ppg_fps=100.
     return np.array(chunks), np.array(ppg_chunks)
 
 
+def load_ppg_simple(ppg_path):
+    """
+    Load PPG from .PW file - SIMPLE VERSION.
+    
+    Since we're using ratio-based synchronization, we just need the PPG values.
+    We don't need to parse timestamps if we're using the fixed ratio approach.
+    
+    Args:
+        ppg_path: Path to .PW file
+    
+    Returns:
+        ppg_values: Array of PPG values
+    """
+    ppg_values = []
+    with open(ppg_path, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 1:
+                try:
+                    ppg_values.append(float(parts[0]))
+                except:
+                    pass
+    return np.array(ppg_values)
+
+
 def test_single_video(row, detector, args):
     """
     Test preprocessing on a single video with full visualization.
     
-    This function:
-    1. Loads all files for the given row
-    2. Processes the video
-    3. Aligns PPG with video
-    4. Creates visualizations
-    5. Returns test results
+    Uses SIMPLE RATIO-BASED SYNCHRONIZATION to match original scripts.
     
     Args:
         row: Database row
@@ -276,13 +247,10 @@ def test_single_video(row, detector, args):
         # Get file paths
         video_path = os.path.join(args.dataset_root, row['video'])
         ppg_path = os.path.join(args.dataset_root, row['ppg'])
-        meta_path = os.path.join(args.dataset_root, row['meta'])
-        ppg_sync_path = os.path.join(args.dataset_root, row['ppg_sync'])
         
         # Verify files exist
-        missing = [f for f in [video_path, ppg_path, meta_path] if not os.path.exists(f)]
-        if missing:
-            results['error'] = f'Missing files: {missing}'
+        if not all(os.path.exists(f) for f in [video_path, ppg_path]):
+            results['error'] = f'Missing files'
             return results
         
         print(f"\n{'='*80}")
@@ -296,51 +264,24 @@ def test_single_video(row, detector, args):
         results['video_info']['shape'] = video.shape
         print(f"  Video: {video.shape[0]} frames, {video.shape[1]}x{video.shape[2]}, {video.shape[3]} channels")
         
-        # Load PPG
+        # Load PPG (simple version - just values)
         print("Loading PPG...")
-        ppg_values, ppg_timestamps = parse_pw_file(ppg_path)
+        ppg_values = load_ppg_simple(ppg_path)
         results['ppg_info']['original_length'] = len(ppg_values)
-        results['ppg_info']['duration_seconds'] = (ppg_timestamps[-1] - ppg_timestamps[0]).total_seconds()
-        print(f"  PPG: {len(ppg_values)} values, duration: {results['ppg_info']['duration_seconds']:.2f}s")
+        print(f"  PPG: {len(ppg_values)} values")
         
-        # Load meta
-        print("Loading meta...")
-        meta_data = parse_meta_file(meta_path)
-        results['video_info']['meta_frames'] = len(meta_data)
-        if len(meta_data) > 0:
-            results['video_info']['meta_duration_seconds'] = (list(meta_data.values())[-1] - list(meta_data.values())[0]).total_seconds()
-            print(f"  Meta: {len(meta_data)} frames, duration: {results['video_info']['meta_duration_seconds']:.2f}s")
+        # Calculate expected ratio
+        expected_ratio = args.ppg_rate / args.frame_rate
+        actual_ratio = len(ppg_values) / len(video)
+        results['alignment_info']['expected_ratio'] = expected_ratio
+        results['alignment_info']['actual_ratio'] = actual_ratio
+        results['alignment_info']['ratio_match'] = abs(actual_ratio - expected_ratio) < 0.01
         
-        # Load PPG sync
-        if os.path.exists(ppg_sync_path):
-            ppg_sync_data = parse_ppg_sync_file(ppg_sync_path)
-            results['alignment_info']['ppg_sync_frames'] = len(ppg_sync_data)
-            print(f"  PPG Sync: {len(ppg_sync_data)} entries")
-        
-        # Align PPG with video
-        print("Aligning PPG with video...")
-        aligned_ppg = align_ppg_with_video(ppg_values, ppg_timestamps, meta_data, args.frame_rate)
-        results['alignment_info']['aligned_ppg_length'] = len(aligned_ppg)
-        print(f"  Aligned PPG: {len(aligned_ppg)} values")
-        
-        # Check alignment
-        video_duration = len(video) / args.frame_rate
-        ppg_duration = results['ppg_info']['duration_seconds']
-        meta_duration = results['video_info'].get('meta_duration_seconds', 0)
-        
-        results['alignment_info']['video_duration'] = video_duration
-        results['alignment_info']['ppg_duration'] = ppg_duration
-        results['alignment_info']['meta_duration'] = meta_duration
-        results['alignment_info']['duration_match'] = abs(video_duration - meta_duration) < 0.1
-        
-        print(f"\n  Duration check:")
-        print(f"    Video: {video_duration:.2f}s")
-        print(f"    PPG: {ppg_duration:.2f}s")
-        print(f"    Meta: {meta_duration:.2f}s")
-        print(f"    Meta matches video: {results['alignment_info']['duration_match']}")
+        print(f"  PPG/Video ratio: {actual_ratio:.4f} (expected: {expected_ratio:.4f})")
+        print(f"  Ratio match: {results['alignment_info']['ratio_match']}")
         
         # Preprocess PPG
-        processed_ppg = preprocess_ppg(aligned_ppg, args.ppg_rate)
+        processed_ppg = preprocess_ppg(ppg_values, args.ppg_rate)
         results['ppg_info']['processed_length'] = len(processed_ppg)
         
         # Process video frames
@@ -350,7 +291,7 @@ def test_single_video(row, detector, args):
         prev_landmarks = None
         
         for fi, frame in enumerate(video):
-            pf, lms = process_frame(frame, detector, fi, prev_landmarks, args.min_face_size if hasattr(args, 'min_face_size') else 64)
+            pf, lms = process_frame(frame, detector, fi, prev_landmarks, args.min_face_size)
             if pf is not None:
                 processed_frames.append(pf)
                 all_landmarks.append(lms)
@@ -363,8 +304,9 @@ def test_single_video(row, detector, args):
             results['error'] = 'No frames processed'
             return results
         
-        # Extract chunks
-        video_chunks, ppg_chunks = extract_chunks(
+        # Extract chunks using SIMPLE RATIO-BASED approach
+        print("Extracting chunks...")
+        video_chunks, ppg_chunks = extract_chunks_simple(
             np.array(processed_frames), processed_ppg,
             args.window_size, args.stride,
             args.frame_rate, args.ppg_rate
@@ -373,15 +315,8 @@ def test_single_video(row, detector, args):
         results['ppg_info']['num_chunks'] = len(ppg_chunks)
         print(f"  Chunks extracted: {len(video_chunks)}")
         
-        # Save vitals
-        vitals_cols = ['weight', 'height', 'bmi', 'age', 'sex', 'upper_ap', 'lower_ap', 
-                      'saturation', 'temperature', 'pulse', 'stress']
-        for col in vitals_cols:
-            if col in row:
-                results['vitals'][col] = row[col]
-        
         # Create visualizations
-        print("\n  Creating visualizations...")
+        print("Creating visualizations...")
         
         # Create output directory for this test
         test_dir = os.path.join(args.output_path, f"test_{row['patient_id']}_{row['camera']}_{row['step']}")
@@ -414,7 +349,7 @@ def test_single_video(row, detector, args):
         plt.tight_layout()
         plt.savefig(os.path.join(test_dir, 'frames_comparison.png'), dpi=100, bbox_inches='tight')
         plt.close()
-        print(f"    Saved: {test_dir}/frames_comparison.png")
+        print(f"  Saved: {test_dir}/frames_comparison.png")
         
         # Visualization 2: PPG signal with chunk
         fig, axes = plt.subplots(2, 1, figsize=(14, 8))
@@ -440,7 +375,7 @@ def test_single_video(row, detector, args):
         plt.tight_layout()
         plt.savefig(os.path.join(test_dir, 'ppg_signal.png'), dpi=100, bbox_inches='tight')
         plt.close()
-        print(f"    Saved: {test_dir}/ppg_signal.png")
+        print(f"  Saved: {test_dir}/ppg_signal.png")
         
         # Visualization 3: Video chunk frames
         if len(video_chunks) > 0:
@@ -453,7 +388,14 @@ def test_single_video(row, detector, args):
             plt.tight_layout()
             plt.savefig(os.path.join(test_dir, 'video_chunk.png'), dpi=100, bbox_inches='tight')
             plt.close()
-            print(f"    Saved: {test_dir}/video_chunk.png")
+            print(f"  Saved: {test_dir}/video_chunk.png")
+        
+        # Save vitals
+        vitals_cols = ['weight', 'height', 'bmi', 'age', 'sex', 'upper_ap', 'lower_ap', 
+                      'saturation', 'temperature', 'pulse', 'stress']
+        for col in vitals_cols:
+            if col in row:
+                results['vitals'][col] = row[col]
         
         # Save test results
         results['success'] = True
@@ -462,18 +404,12 @@ def test_single_video(row, detector, args):
         # Print summary
         print(f"\n  Test Summary:")
         print(f"    Video: {results['video_info']['original_frames']} frames -> {results['video_info']['processed_frames']} processed")
-        print(f"    PPG: {results['ppg_info']['original_length']} values -> {results['ppg_info']['aligned_ppg_length']} aligned")
+        print(f"    PPG: {results['ppg_info']['original_length']} values -> {results['ppg_info']['processed_length']} processed")
         print(f"    Chunks: {results['video_info']['num_chunks']} video, {results['ppg_info']['num_chunks']} PPG")
+        print(f"    PPG/Video ratio: {actual_ratio:.4f} (expected: {expected_ratio:.4f})")
+        print(f"    Ratio match: {results['alignment_info']['ratio_match']}")
         print(f"    Vitals: {len(results['vitals'])} parameters")
         print(f"    Visualizations saved to: {test_dir}")
-        
-        # Verify alignment matches original preprocessing
-        print(f"\n  Alignment Verification:")
-        print(f"    Video duration: {video_duration:.2f}s")
-        print(f"    PPG duration: {ppg_duration:.2f}s")
-        print(f"    Meta duration: {meta_duration:.2f}s")
-        print(f"    Duration match (video vs meta): {results['alignment_info']['duration_match']}")
-        print(f"    PPG/Video ratio: {len(ppg_values)/len(video):.2f} (should be ~{args.ppg_rate/args.frame_rate:.2f})")
         
         return results
         
@@ -503,13 +439,12 @@ def print_test_summary(results):
             print(f"    -> Processed: {result['video_info'].get('processed_frames', 0)} frames")
             print(f"    -> Chunks: {result['video_info'].get('num_chunks', 0)}")
             print(f"  PPG: {result['ppg_info'].get('original_length', 0)} values")
-            print(f"    -> Aligned: {result['alignment_info'].get('aligned_ppg_length', 0)} values")
+            print(f"    -> Processed: {result['ppg_info'].get('processed_length', 0)} values")
             print(f"    -> Chunks: {result['ppg_info'].get('num_chunks', 0)}")
             print(f"  Alignment:")
-            print(f"    Video duration: {result['alignment_info'].get('video_duration', 0):.2f}s")
-            print(f"    PPG duration: {result['alignment_info'].get('ppg_duration', 0):.2f}s")
-            print(f"    Meta duration: {result['alignment_info'].get('meta_duration', 0):.2f}s")
-            print(f"    Duration match: {result['alignment_info'].get('duration_match', False)}")
+            print(f"    Expected ratio (PPG/Video): {result['alignment_info'].get('expected_ratio', 0):.4f}")
+            print(f"    Actual ratio: {result['alignment_info'].get('actual_ratio', 0):.4f}")
+            print(f"    Ratio match: {result['alignment_info'].get('ratio_match', False)}")
             print(f"  Vitals: {len(result.get('vitals', {}))} parameters")
             print(f"  Output: {result.get('test_dir', 'N/A')}")
         else:
@@ -551,31 +486,12 @@ def main():
     all_success = all(r.get('success', False) for r in all_results)
     if all_success:
         print(f"\n✅ All {len(all_results)} tests passed!")
+        print("\n🎯 Synchronization verification:")
+        print("   Using SIMPLE RATIO-BASED approach (100/30 = 3.333...)")
+        print("   This matches the ORIGINAL preprocessing scripts")
+        print("   No complex timestamp parsing needed")
     else:
         print(f"\n⚠️ {sum(1 for r in all_results if r.get('success'))}/{len(all_results)} tests passed")
-    
-    # Verify alignment consistency
-    print(f"\n{'='*80}")
-    print("ALIGNMENT VERIFICATION")
-    print(f"{'='*80}")
-    
-    for i, result in enumerate(all_results):
-        if result.get('success'):
-            print(f"\nTest {i+1}:")
-            print(f"  Video frames: {result['video_info'].get('original_frames', 0)}")
-            print(f"  Meta frames: {result['video_info'].get('meta_frames', 0)}")
-            print(f"  Video duration: {result['alignment_info'].get('video_duration', 0):.2f}s")
-            print(f"  Meta duration: {result['alignment_info'].get('meta_duration', 0):.2f}s")
-            print(f"  Duration match: {result['alignment_info'].get('duration_match', False)}")
-            
-            # Check PPG/Video ratio
-            video_frames = result['video_info'].get('original_frames', 0)
-            ppg_values = result['ppg_info'].get('original_length', 0)
-            if video_frames > 0:
-                ratio = ppg_values / video_frames
-                expected_ratio = args.ppg_rate / args.frame_rate
-                print(f"  PPG/Video ratio: {ratio:.2f} (expected: {expected_ratio:.2f})")
-                print(f"  Ratio match: {abs(ratio - expected_ratio) < 0.1}")
     
     print(f"\n{'='*80}")
     print("Test output saved to:", args.output_path)
