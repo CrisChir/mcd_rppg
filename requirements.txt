@@ -1,7 +1,8 @@
-face_alignment==1.4.1
+mediapipe>=0.10.11
 matplotlib==3.10.7
 numba==0.62.1
 numpy==2.3.5
+opencv-python-headless>=4.9.0.80
 pandas==2.3.3
 scikit_learn==1.7.2
 scipy==1.16.3

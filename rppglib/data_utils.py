@@ -2,6 +2,7 @@
 Data utilities for rPPG processing.
 
 This module provides functions for loading and processing video and signal data.
+Compatibility: Works with MediaPipe and OpenCV.
 
 Author: CrisChir
 Date: September 2025
@@ -13,7 +14,12 @@ import numpy as np
 from typing import Tuple, Optional, Union
 
 
-def load_video(video_path: str, start_frame: int = 0, end_frame: Optional[int] = None) -> np.ndarray:
+def load_video(
+    video_path: str, 
+    start_frame: int = 0, 
+    end_frame: Optional[int] = None,
+    target_fps: Optional[float] = None
+) -> np.ndarray:
     """
     Load a video file and return frames as a numpy array.
     
@@ -21,6 +27,7 @@ def load_video(video_path: str, start_frame: int = 0, end_frame: Optional[int] =
         video_path: Path to the video file
         start_frame: Starting frame index (default: 0)
         end_frame: Ending frame index (default: None, load all frames)
+        target_fps: Target FPS for resampling (default: None, use original)
     
     Returns:
         numpy array of shape (T, H, W, 3) containing RGB frames
@@ -66,7 +73,7 @@ def load_video(video_path: str, start_frame: int = 0, end_frame: Optional[int] =
         if end_frame is not None and frame_idx >= end_frame:
             break
         
-        # Convert BGR to RGB
+        # Convert BGR to RGB (MediaPipe expects RGB)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frames.append(frame)
         frame_idx += 1
@@ -246,3 +253,39 @@ def standardize_video(video: np.ndarray) -> np.ndarray:
     
     video = (video - mean) / std
     return video
+
+
+def video_to_grayscale(video: np.ndarray) -> np.ndarray:
+    """
+    Convert RGB video to grayscale.
+    
+    Args:
+        video: Input video array of shape (T, H, W, 3)
+    
+    Returns:
+        Grayscale video array of shape (T, H, W)
+    """
+    grayscale = []
+    for frame in video:
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        grayscale.append(gray)
+    return np.array(grayscale, dtype=np.uint8)
+
+
+def resize_video(video: np.ndarray, target_size: Tuple[int, int]) -> np.ndarray:
+    """
+    Resize all frames in a video to a target size.
+    
+    Args:
+        video: Input video array of shape (T, H, W, 3)
+        target_size: Target size as (width, height)
+    
+    Returns:
+        Resized video array of shape (T, target_height, target_width, 3)
+    """
+    target_width, target_height = target_size
+    resized = []
+    for frame in video:
+        resized_frame = cv2.resize(frame, (target_width, target_height))
+        resized.append(resized_frame)
+    return np.array(resized, dtype=np.uint8)

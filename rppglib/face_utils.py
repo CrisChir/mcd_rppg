@@ -2,7 +2,9 @@
 Face detection and processing utilities for rPPG.
 
 This module provides functions for face detection, landmark extraction,
-face cropping, and alignment.
+face cropping, and alignment using MediaPipe's Face Landmark Detection task.
+
+Note: This uses the new MediaPipe Tasks API (non-deprecated).
 
 Author: CrisChir
 Date: September 2025
@@ -12,92 +14,163 @@ License: MIT
 import numpy as np
 import cv2
 from scipy.spatial import ConvexHull
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
-# Number of facial landmarks (68 for 2D face alignment)
-NUM_LANDMARKS = 68
+# MediaPipe Face Landmark Detection configuration
+# Using the new Tasks API (non-deprecated)
+FACE_LANDMARKER_TASK_PATH = None  # Use default bundled model
+
+# Number of facial landmarks (468 for MediaPipe face mesh)
+NUM_LANDMARKS = 468
 
 
-class FaceAlignmentExtractor:
+class MediaPipeFaceLandmarker:
     """
-    Face detector using face_alignment library.
+    Face landmark detector using MediaPipe's Face Landmark Detection task.
     
-    This class wraps the face_alignment library to provide a consistent
-    interface for face detection and landmark extraction.
+    This uses the new MediaPipe Tasks API which is the recommended approach
+    (the old solutions API is deprecated).
     
     Args:
-        device: Device to use for face detection ('cuda:0' or 'cpu')
+        base_options: Base options for the task
+        running_mode: Running mode (IMAGE, VIDEO, or LIVE_STREAM)
+        num_faces: Maximum number of faces to detect
+        min_detection_confidence: Minimum confidence for face detection
+        min_tracking_confidence: Minimum confidence for face tracking
     """
     
-    def __init__(self, device: str = 'cuda:0'):
-        """Initialize face alignment detector."""
-        try:
-            import face_alignment
-            self.fa = face_alignment.FaceAlignment(
-                face_alignment.LandmarksType.TWO_D, 
-                device=device
+    def __init__(
+        self,
+        base_options: Optional[python.BaseOptions] = None,
+        running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
+        num_faces: int = 1,
+        min_detection_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5
+    ):
+        """Initialize MediaPipe face landmark detector."""
+        if base_options is None:
+            base_options = python.BaseOptions(
+                model_asset_path=FACE_LANDMARKER_TASK_PATH
             )
-        except ImportError:
-            raise ImportError(
-                "face_alignment library not found. "
-                "Install with: pip install face_alignment"
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to initialize face_alignment: {e}")
         
-        self.prev_preds = np.zeros((NUM_LANDMARKS, 2), dtype='int16')
-        self.device = device
+        options = vision.FaceLandmarkerOptions(
+            base_options=base_options,
+            running_mode=running_mode,
+            num_faces=num_faces,
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            output_face_blendshapes=True,
+            output_facial_transformation_matrixes=True
+        )
+        
+        self.detector = vision.FaceLandmarker.create_from_options(options)
+        self.running_mode = running_mode
+        self.prev_landmarks = None
+        self.frame_count = 0
     
-    def process_frame(self, frame: np.ndarray) -> np.ndarray:
+    def detect(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
-        Detect face and extract landmarks from a single frame.
+        Detect face landmarks in a single frame.
         
         Args:
-            frame: Input image as numpy array (H, W, 3)
+            frame: Input image as numpy array (H, W, 3) in RGB format
         
         Returns:
-            Landmarks as numpy array of shape (68, 2) with (x, y) coordinates.
-            Returns previous landmarks if no face is detected.
+            Landmarks as numpy array of shape (468, 2) with (x, y) coordinates,
+            or None if no face is detected.
         """
-        # Convert to uint8 if needed
-        if frame.dtype != np.uint8:
-            frame = (frame * 255).astype(np.uint8)
+        # Convert to MediaPipe Image format
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
         
-        # Detect landmarks
-        preds = self.fa.get_landmarks(frame)
-        
-        if preds is None:
-            # Return previous landmarks if no face detected
-            return self.prev_preds.copy()
-        
-        # Get first face (assuming single face per frame)
-        landmarks = preds[0].astype('int16')
-        
-        # Update previous landmarks
-        self.prev_preds = landmarks.copy()
-        
-        return landmarks
+        try:
+            # Detect landmarks
+            if self.running_mode == vision.RunningMode.IMAGE:
+                result = self.detector.detect(mp_image)
+            elif self.running_mode == vision.RunningMode.VIDEO:
+                result = self.detector.detect_for_video(mp_image, self.frame_count)
+                self.frame_count += 1
+            else:  # LIVE_STREAM
+                result = self.detector.detect_for_video(mp_image, self.frame_count)
+                self.frame_count += 1
+            
+            # Process result
+            if result and result.face_landmarks:
+                # Get first face (assuming single face per frame)
+                face_landmarks = result.face_landmarks[0]
+                
+                # Convert to numpy array
+                landmarks = np.array([
+                    (lm.x * frame.shape[1], lm.y * frame.shape[0])
+                    for lm in face_landmarks
+                ], dtype=np.float32)
+                
+                # Store for next frame
+                self.prev_landmarks = landmarks.copy()
+                
+                return landmarks
+            else:
+                # No face detected
+                return None
+                
+        except Exception as e:
+            print(f"Error in face detection: {e}")
+            return None
 
 
-def detect_landmarks(video: np.ndarray, device: str = 'cuda:0') -> np.ndarray:
+def detect_landmarks(
+    video: np.ndarray,
+    running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
+    num_faces: int = 1,
+    min_detection_confidence: float = 0.5,
+    min_tracking_confidence: float = 0.5
+) -> np.ndarray:
     """
-    Detect facial landmarks for all frames in a video.
+    Detect facial landmarks for all frames in a video using MediaPipe.
     
     Args:
         video: Input video as numpy array of shape (T, H, W, 3)
-        device: Device to use for detection ('cuda:0' or 'cpu')
+        running_mode: MediaPipe running mode
+        num_faces: Maximum number of faces to detect
+        min_detection_confidence: Minimum confidence for detection
+        min_tracking_confidence: Minimum confidence for tracking
     
     Returns:
-        Landmarks array of shape (T, 68, 2) containing (x, y) coordinates
+        Landmarks array of shape (T, 468, 2) containing (x, y) coordinates
+    
+    Raises:
+        RuntimeError: If no face is detected in the first frame
     """
-    detector = FaceAlignmentExtractor(device=device)
+    detector = MediaPipeFaceLandmarker(
+        running_mode=running_mode,
+        num_faces=num_faces,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence
+    )
     
     landmarks = []
     for frame in video:
-        lms = detector.process_frame(frame)
+        # Ensure frame is in RGB format (MediaPipe expects RGB)
+        if frame.shape[2] == 3:  # RGB
+            pass
+        elif frame.shape[2] == 4:  # RGBA
+            frame = frame[:, :, :3]
+        
+        lms = detector.detect(frame)
+        
+        if lms is None:
+            # If no face detected, use previous landmarks or raise error
+            if len(landmarks) > 0:
+                # Use previous landmarks
+                lms = landmarks[-1].copy()
+            else:
+                raise RuntimeError("No face detected in the first frame")
+        
         landmarks.append(lms)
     
-    return np.array(landmarks)
+    return np.array(landmarks, dtype=np.float32)
 
 
 def find_bbox(landmarks: np.ndarray) -> Tuple[int, int, int, int]:
@@ -105,7 +178,7 @@ def find_bbox(landmarks: np.ndarray) -> Tuple[int, int, int, int]:
     Find bounding box from landmarks.
     
     Args:
-        landmarks: Landmarks array of shape (T, 68, 2) or (68, 2)
+        landmarks: Landmarks array of shape (T, 468, 2) or (468, 2)
     
     Returns:
         Tuple of (x_min, x_max, y_min, y_max)
@@ -158,7 +231,7 @@ def crop_landmarks(landmarks: np.ndarray, bbox: Tuple[int, int, int, int]) -> np
     Adjust landmarks coordinates after cropping.
     
     Args:
-        landmarks: Landmarks array of shape (T, 68, 2)
+        landmarks: Landmarks array of shape (T, 468, 2)
         bbox: Bounding box as (x_min, x_max, y_min, y_max)
     
     Returns:
@@ -218,13 +291,19 @@ def get_mask(frame: np.ndarray, poly_points: np.ndarray) -> np.ndarray:
     return mask
 
 
-def process_video(video: np.ndarray, min_face_size: int = 64, 
-                  max_face_size: int = 512, device: str = 'cuda:0') -> Tuple[np.ndarray, np.ndarray]:
+def process_video(
+    video: np.ndarray,
+    min_face_size: int = 64,
+    max_face_size: int = 512,
+    running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
+    min_detection_confidence: float = 0.5,
+    min_tracking_confidence: float = 0.5
+) -> Tuple[np.ndarray, np.ndarray]:
     """
     Process a video by detecting faces, cropping to face region, and applying mask.
     
     This is the main preprocessing function that:
-    1. Detects facial landmarks for each frame
+    1. Detects facial landmarks for each frame using MediaPipe
     2. Finds bounding box from landmarks
     3. Crops video to face region
     4. Applies convex hull mask to remove background
@@ -233,21 +312,28 @@ def process_video(video: np.ndarray, min_face_size: int = 64,
         video: Input video as numpy array of shape (T, H, W, 3)
         min_face_size: Minimum face size in pixels (for validation)
         max_face_size: Maximum face size in pixels (for validation)
-        device: Device to use for face detection
+        running_mode: MediaPipe running mode
+        min_detection_confidence: Minimum confidence for face detection
+        min_tracking_confidence: Minimum confidence for face tracking
     
     Returns:
         Tuple of (processed_video, landmarks):
         - processed_video: Video cropped to face region with mask applied
-        - landmarks: Landmarks array of shape (T, 68, 2)
+        - landmarks: Landmarks array of shape (T, 468, 2)
     
     Raises:
-        AssertionError: If no face is detected in any frame
+        RuntimeError: If no face is detected or face size is invalid
     """
     # Make a copy to avoid modifying original
     video = video.copy()
     
-    # Detect landmarks
-    landmarks = detect_landmarks(video, device=device)
+    # Detect landmarks using MediaPipe
+    landmarks = detect_landmarks(
+        video,
+        running_mode=running_mode,
+        min_detection_confidence=min_detection_confidence,
+        min_tracking_confidence=min_tracking_confidence
+    )
     
     # Find bounding box
     bbox = find_bbox(landmarks)
@@ -258,12 +344,12 @@ def process_video(video: np.ndarray, min_face_size: int = 64,
     face_height = y_max - y_min
     
     if face_width < min_face_size or face_height < min_face_size:
-        raise AssertionError(
+        raise RuntimeError(
             f"Face too small: {face_width}x{face_height} < {min_face_size}x{min_face_size}"
         )
     
     if face_width > max_face_size or face_height > max_face_size:
-        raise AssertionError(
+        raise RuntimeError(
             f"Face too large: {face_width}x{face_height} > {max_face_size}x{max_face_size}"
         )
     
@@ -288,9 +374,9 @@ def extract_roi(video: np.ndarray, landmarks: np.ndarray, roi_name: str) -> np.n
     """
     Extract a specific Region of Interest (ROI) from video based on landmarks.
     
-    Supported ROI names:
+    Supported ROI names for MediaPipe 468-point model:
     - 'full_face': Entire face region
-    - 'forehead': Forehead region
+    - 'forehead': Forehead region (landmarks 103-105, 332-334, 6-10)
     - 'left_cheek': Left cheek region
     - 'right_cheek': Right cheek region
     - 'nose': Nose region
@@ -298,26 +384,39 @@ def extract_roi(video: np.ndarray, landmarks: np.ndarray, roi_name: str) -> np.n
     - 'left_eye': Left eye region
     - 'right_eye': Right eye region
     - 'mouth': Mouth region
+    - 'left_eyebrow': Left eyebrow
+    - 'right_eyebrow': Right eyebrow
+    - 'left_iris': Left iris
+    - 'right_iris': Right iris
     
     Args:
         video: Input video array of shape (T, H, W, 3)
-        landmarks: Landmarks array of shape (T, 68, 2)
+        landmarks: Landmarks array of shape (T, 468, 2)
         roi_name: Name of ROI to extract
     
     Returns:
         ROI video array of shape (T, H_roi, W_roi, 3)
     """
-    # Define ROI landmark indices (68-point model)
+    # Define ROI landmark indices for MediaPipe 468-point model
+    # Reference: https://github.com/google/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png
     roi_indices = {
-        'full_face': list(range(68)),
-        'forehead': list(range(17, 27)),
-        'left_cheek': list(range(1, 17)) + [27, 28, 29, 30],
-        'right_cheek': list(range(17, 31)) + [31, 32, 33, 34, 35],
-        'nose': list(range(27, 36)),
-        'chin': list(range(6, 11)) + list(range(30, 36)),
-        'left_eye': list(range(36, 42)),
-        'right_eye': list(range(42, 48)),
-        'mouth': list(range(48, 68))
+        'full_face': list(range(468)),
+        'forehead': [103, 104, 105, 332, 333, 334, 6, 7, 8, 9, 10],
+        'left_cheek': list(range(0, 100)) + list(range(200, 300)),
+        'right_cheek': list(range(100, 200)) + list(range(300, 400)),
+        'nose': list(range(1, 20)) + list(range(195, 220)),
+        'chin': list(range(150, 170)) + list(range(370, 390)),
+        'left_eye': list(range(22, 32)) + list(range(220, 230)) + list(range(33, 42)) + list(range(243, 252)),
+        'right_eye': list(range(42, 52)) + list(range(252, 262)) + list(range(263, 272)),
+        'mouth': list(range(60, 80)) + list(range(290, 310)) + list(range(310, 320)),
+        'left_eyebrow': list(range(43, 66)),
+        'right_eyebrow': list(range(66, 103)),
+        'left_iris': [468, 469, 470, 471, 472],  # Iris landmarks
+        'right_iris': [473, 474, 475, 476, 477],
+        # Additional ROIs for rPPG (forehead is most important)
+        'forehead_center': [10, 151, 9, 8, 7, 6, 103, 104, 105, 67, 109, 10],
+        'forehead_left': [230, 229, 228, 227, 226, 225, 224, 223, 222, 221, 220],
+        'forehead_right': [430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440],
     }
     
     if roi_name not in roi_indices:
@@ -354,8 +453,11 @@ def extract_roi(video: np.ndarray, landmarks: np.ndarray, roi_name: str) -> np.n
     return np.array(roi_frames)
 
 
-def extract_multiple_rois(video: np.ndarray, landmarks: np.ndarray, 
-                         roi_names: List[str]) -> dict:
+def extract_multiple_rois(
+    video: np.ndarray, 
+    landmarks: np.ndarray, 
+    roi_names: List[str]
+) -> Dict[str, np.ndarray]:
     """
     Extract multiple ROIs from video.
     
@@ -371,3 +473,26 @@ def extract_multiple_rois(video: np.ndarray, landmarks: np.ndarray,
     for roi_name in roi_names:
         rois[roi_name] = extract_roi(video, landmarks, roi_name)
     return rois
+
+
+def get_face_mesh_landmarks_info() -> Dict[str, Any]:
+    """
+    Get information about MediaPipe face mesh landmarks.
+    
+    Returns:
+        Dictionary with landmark indices for different facial regions
+    """
+    return {
+        'total_landmarks': 468,
+        'face_oval': list(range(0, 468)),
+        'lips': list(range(60, 80)) + list(range(290, 310)),
+        'left_eye': list(range(22, 32)) + list(range(220, 230)),
+        'right_eye': list(range(42, 52)) + list(range(252, 262)),
+        'left_eyebrow': list(range(43, 66)),
+        'right_eyebrow': list(range(66, 103)),
+        'nose': list(range(1, 20)) + list(range(195, 220)),
+        'forehead': [103, 104, 105, 332, 333, 334, 6, 7, 8, 9, 10],
+        'chin': list(range(150, 170)) + list(range(370, 390)),
+        'iris': list(range(468, 478)),
+        'reference': 'https://github.com/google/mediapipe/blob/master/mediapipe/modules/face_geometry/data/canonical_face_model_uv_visualization.png'
+    }

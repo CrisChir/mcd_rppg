@@ -1,30 +1,40 @@
 # MCD-rPPG Preprocessing Pipeline
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.8+-blue?logo=python)](https://www.python.org/)
+[![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.11+-green?logo=google)](https://mediapipe.dev/)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.5+-green?logo=opencv)](https://opencv.org/)
-[![Face Alignment](https://img.shields.io/badge/FaceAlignment-1.4.1-orange)](https://github.com/1adrianb/face-alignment)
 
-This document provides comprehensive documentation for preprocessing the MCD-rPPG dataset, including setup instructions, preprocessing steps, scripts, troubleshooting, and performance optimization.
+This document provides comprehensive documentation for preprocessing the MCD-rPPG dataset using **MediaPipe Tasks API** (non-deprecated).
 
 ## 📋 Table of Contents
 
 1. [Overview](#-overview)
 2. [Prerequisites](#-prerequisites)
 3. [Dataset Download](#-dataset-download)
-4. [Preprocessing Steps](#-preprocessing-steps)
-5. [Preprocessing Scripts](#-preprocessing-scripts)
-6. [Metadata and Synchronization](#-metadata-and-synchronization)
-7. [Troubleshooting](#-troubleshooting)
-8. [Performance Tips](#-performance-tips)
-9. [Full Pipeline Example](#-full-pipeline-example)
-10. [Preprocessed Dataset Output](#-preprocessed-dataset-output)
+4. [MediaPipe Configuration](#-mediapipe-configuration)
+5. [Preprocessing Steps](#-preprocessing-steps)
+6. [Preprocessing Scripts](#-preprocessing-scripts)
+7. [Metadata and Synchronization](#-metadata-and-synchronization)
+8. [Troubleshooting](#-troubleshooting)
+9. [Performance Tips](#-performance-tips)
+10. [Full Pipeline Example](#-full-pipeline-example)
+11. [Preprocessed Dataset Output](#-preprocessed-dataset-output)
 
 ## 🎯 Overview
 
-The preprocessing pipeline transforms raw MCD-rPPG dataset into a format suitable for training deep learning models. The pipeline includes:
+The preprocessing pipeline transforms raw MCD-rPPG dataset into a format suitable for training deep learning models. The pipeline now uses **MediaPipe Tasks API** (the non-deprecated version) for face landmark detection.
 
-- **Face Detection:** Detect and track faces across video frames
-- **Face Alignment:** Extract facial landmarks for ROI selection
+**Key Changes:**
+- ✅ Replaced `face_alignment` with `mediapipe>=0.10.11`
+- ✅ Using `FaceLandmarker` from `mediapipe.tasks.python.vision`
+- ✅ 468-point face mesh model (up from 68 points)
+- ✅ Better performance and accuracy
+- ✅ Active maintenance by Google
+
+The pipeline includes:
+
+- **Face Detection:** Detect and track faces across video frames using MediaPipe
+- **Face Alignment:** Extract 468 facial landmarks for ROI selection
 - **Chunking:** Split long videos into manageable segments
 - **Filtering:** Remove low-quality frames and videos
 - **Feature Extraction:** Extract facial regions and normalize data
@@ -38,7 +48,7 @@ The preprocessing pipeline transforms raw MCD-rPPG dataset into a format suitabl
 |-----------|---------|-------------|-------|
 | **CPU** | 4 cores | 16+ cores | Multi-core for parallel processing |
 | **RAM** | 16 GB | 64+ GB | More RAM = larger batch sizes |
-| **GPU** | None | NVIDIA GPU | Optional for face detection acceleration |
+| **GPU** | None | NVIDIA GPU | Optional for MediaPipe acceleration |
 | **Storage** | 200 GB | 500+ GB SSD | Fast storage for video processing |
 | **Disk Space** | 200 GB | 500+ GB | For raw + processed data |
 
@@ -46,10 +56,11 @@ The preprocessing pipeline transforms raw MCD-rPPG dataset into a format suitabl
 
 **Core Dependencies (in `requirements.txt`):**
 ```bash
-face_alignment==1.4.1
+mediapipe>=0.10.11      # Face landmark detection (replaces face_alignment)
 matplotlib==3.10.7
 numba==0.62.1
 numpy==2.3.5
+opencv-python-headless>=4.9.0.80  # Required for video processing
 pandas==2.3.3
 scikit_learn==1.7.2
 scipy==1.16.3
@@ -61,7 +72,7 @@ tqdm==4.67.1
 
 **Additional Preprocessing Dependencies:**
 ```bash
-pip install opencv-python-headless datasets huggingface_hub scikit-image
+pip install datasets huggingface_hub scikit-image
 ```
 
 ### Storage Requirements
@@ -70,12 +81,75 @@ pip install opencv-python-headless datasets huggingface_hub scikit-image
 |-----------|-------------------|---------------------------|
 | Raw Videos | ~230 MB | ~135 GB |
 | Processed Faces | ~50 MB | ~30 GB |
-| Landmarks | ~5 MB | ~3 GB |
+| Landmarks (468 points) | ~10 MB | ~6 GB |
 | PPG Signals | ~1 MB | ~600 MB |
 | ECG Signals | ~1 MB | ~600 MB |
-| **Total** | **~287 MB** | **~170 GB** |
+| **Total** | **~292 MB** | **~173 GB** |
 
-**Note:** Processed data can be deleted after training to save space.
+**Note:** The landmarks are now larger (468 points instead of 68), but provide much better accuracy.
+
+## 🎨 MediaPipe Configuration
+
+### Face Landmark Detection
+
+The preprocessing now uses MediaPipe's **Face Landmark Detection task** with the following configuration:
+
+```python
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+# Create face landmarker
+base_options = python.BaseOptions(model_asset_path=None)  # Uses bundled model
+options = vision.FaceLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    num_faces=1,  # Detect only one face per frame
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+    output_face_blendshapes=True,
+    output_facial_transformation_matrixes=True
+)
+detector = vision.FaceLandmarker.create_from_options(options)
+```
+
+### Key Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `running_mode` | `VIDEO` | Optimized for video processing |
+| `num_faces` | `1` | Maximum faces to detect per frame |
+| `min_detection_confidence` | `0.5` | Minimum confidence for initial detection |
+| `min_tracking_confidence` | `0.5` | Minimum confidence for tracking |
+| `model_asset_path` | `None` | Uses bundled BlazeFace + Face Mesh model |
+
+### Landmark Model
+
+- **Total Landmarks:** 468 points
+- **Model Type:** Face Mesh
+- **Coverage:** Full face including eyes, eyebrows, nose, mouth, chin, forehead
+- **Format:** (x, y) coordinates normalized to [0, 1] range, then scaled to image dimensions
+
+### ROI Extraction
+
+The 468-point model allows for precise ROI extraction:
+
+```python
+# Available ROIs (using MediaPipe 468-point model)
+rois = {
+    'full_face': 468 landmarks,
+    'forehead': [103, 104, 105, 332, 333, 334, 6, 7, 8, 9, 10],
+    'left_eye': landmarks 22-52,
+    'right_eye': landmarks 252-282,
+    'nose': landmarks 1-20, 195-220,
+    'mouth': landmarks 60-80, 290-320,
+    'left_cheek': landmarks 0-100, 200-300,
+    'right_cheek': landmarks 100-200, 300-400,
+    'chin': landmarks 150-170, 370-390,
+    'left_iris': landmarks 468-472,
+    'right_iris': landmarks 473-477
+}
+```
 
 ## 📥 Dataset Download
 
@@ -121,61 +195,29 @@ cd mcd_rppg
 git lfs pull
 ```
 
-**Pros:**
-- Version controlled
-- Can resume interrupted downloads
-- Good for incremental updates
-
-**Cons:**
-- Requires Git LFS setup
-- Large repository size
-- Slower for initial clone
-
 ### Method 3: Manual Download
 
 1. Visit: https://huggingface.co/datasets/Bgeorge/mcd_rppg
 2. Click "Download dataset" button
-3. Extract the downloaded archive:
-   ```bash
-   # For .tar.gz files
-   tar -xzvf mcd_rppg.tar.gz
-   
-   # For .zip files
-   unzip mcd_rppg.zip
-   ```
-4. Verify file integrity:
-   ```bash
-   # Check file counts
-   find mcd_rppg -name "*.avi" | wc -l  # Should be 3600
-   find mcd_rppg -name "*.npy" | wc -l  # Should be 7200+ (PPG + ECG)
-   ```
-
-**Pros:**
-- No dependencies required
-- Can use download managers
-- Good for offline environments
-
-**Cons:**
-- Manual process
-- No version control
-- Need to verify integrity
+3. Extract the downloaded archive
+4. Verify file integrity
 
 ## 🔧 Preprocessing Steps
 
-### Step 1: Face Detection
+### Step 1: Face Detection (MediaPipe)
 
-**Purpose:** Detect and track faces in video frames
+**Purpose:** Detect and track faces in video frames using MediaPipe Face Landmark Detection
 
-**Algorithm:** Face Alignment library (68 landmarks)
+**Algorithm:** MediaPipe FaceLandmarker with 468-point mesh
 
 **Process:**
 1. Load video frame by frame
-2. Detect face using face_alignment
-3. Extract 68 facial landmarks
-4. Handle face detection failures (skip or interpolate)
+2. Detect face using MediaPipe FaceLandmarker
+3. Extract 468 facial landmarks
+4. Handle face detection failures (use previous landmarks or skip)
 
 **Output:**
-- `landmarks.npy`: Array of shape (T, 68, 2) containing (x, y) coordinates
+- `landmarks.npy`: Array of shape (T, 468, 2) containing (x, y) coordinates
 - `detection_errors.csv`: Log of frames where face detection failed
 
 ### Step 2: Face Cropping and Alignment
@@ -183,10 +225,10 @@ git lfs pull
 **Purpose:** Extract and normalize facial regions
 
 **Process:**
-1. Find bounding box from landmarks
-2. Crop video to face region
-3. Align face using similarity transform
-4. Normalize face size (optional)
+1. Find bounding box from landmarks (using all 468 points)
+2. Crop video to face region with padding
+3. Adjust landmark coordinates to cropped frame
+4. Apply convex hull mask to remove background
 
 **Output:**
 - `faces.npy`: Array of shape (T, H, W, 3) containing cropped faces
@@ -218,7 +260,7 @@ git lfs pull
 
 1. **Face Detection Confidence**
    - Remove frames with confidence < 0.5
-   - Interpolate missing landmarks
+   - Use previous landmarks for interpolation
 
 2. **Motion Blur Detection**
    - Calculate frame-to-frame differences
@@ -250,10 +292,12 @@ git lfs pull
 
 1. **Spatial Features**
    - Face ROI (Region of Interest)
-   - Forehead region
+   - Forehead region (most important for rPPG)
    - Cheek regions (left and right)
    - Nose region
    - Chin region
+   - Eye regions (left and right)
+   - Mouth region
 
 2. **Temporal Features**
    - Frame differences
@@ -305,7 +349,9 @@ python dataset_preprocessing_1.py \
     --camera_id 1 \
     --start_idx 0 \
     --end_idx 1200 \
-    --num_workers 8
+    --num_workers 8 \
+    --min_detection_confidence 0.5 \
+    --min_tracking_confidence 0.5
 ```
 
 ### Script 2: `dataset_preprocessing_2.py`
@@ -352,8 +398,11 @@ python dataset_preprocessing_3.py \
 | `--stride` | int | 64 | Step between samples |
 | `--min_face_size` | int | 64 | Minimum face size in pixels |
 | `--max_face_size` | int | 512 | Maximum face size in pixels |
+| `--min_detection_confidence` | float | 0.5 | MediaPipe detection confidence |
+| `--min_tracking_confidence` | float | 0.5 | MediaPipe tracking confidence |
 | `--skip_existing` | bool | True | Skip already processed files |
 | `--verbose` | bool | False | Enable verbose logging |
+| `--debug` | bool | False | Enable debug mode with additional checks |
 
 ### Running All Scripts in Parallel
 
@@ -530,7 +579,28 @@ python dataset_preprocessing_1.py --memory_efficient True
 - Use **generators** instead of loading all data into memory
 - **Upgrade RAM** or use a machine with more memory
 
-#### 2. Slow Face Detection
+#### 2. MediaPipe Installation Issues
+
+**Symptoms:**
+- `ImportError: cannot import name X from mediapipe`
+- `ModuleNotFoundError: No module named mediapipe`
+
+**Solutions:**
+
+```bash
+# Install MediaPipe with correct version
+pip install mediapipe>=0.10.11
+
+# Check installation
+python -c "import mediapipe as mp; print(mp.__version__)"
+
+# If using GPU, install with GPU support
+pip install mediapipe --extra-index-url https://google-coral.github.io/py-repo/
+```
+
+**Note:** MediaPipe 0.10.11+ uses the new Tasks API. Older versions use the deprecated solutions API.
+
+#### 3. Slow Face Detection
 
 **Symptoms:**
 - Face detection takes > 1 second per frame
@@ -540,49 +610,49 @@ python dataset_preprocessing_1.py --memory_efficient True
 **Solutions:**
 
 ```bash
-# Use GPU for face detection
-python dataset_preprocessing_1.py --device cuda:0
+# Lower confidence thresholds for speed
+python dataset_preprocessing_1.py --min_detection_confidence 0.3 --min_tracking_confidence 0.3
 
-# Reduce face detector accuracy for speed
-python dataset_preprocessing_1.py --face_detector fast
+# Use IMAGE mode instead of VIDEO mode (less tracking overhead)
+python dataset_preprocessing_1.py --running_mode IMAGE
 
-# Use smaller input resolution
+# Reduce input resolution
 python dataset_preprocessing_1.py --input_resolution 640x480
 ```
 
 **Advanced Solutions:**
-- Use **MediaPipe** instead of face_alignment (faster but less accurate)
+- Use **MediaPipe GPU delegate** for hardware acceleration
 - **Batch face detection** across multiple frames
-- Use **ONNX runtime** for accelerated inference
+- Use **smaller model** if available
 - **Pre-compute landmarks** and save to disk
 
-#### 3. Face Detection Failures
+#### 4. Face Detection Failures
 
 **Symptoms:**
 - Many frames with no face detected
-- `AssertionError: No face detected`
+- `RuntimeError: No face detected in the first frame`
 - Low face detection confidence scores
 
 **Solutions:**
 
 ```bash
 # Lower detection confidence threshold
-python dataset_preprocessing_1.py --min_confidence 0.3
+python dataset_preprocessing_1.py --min_detection_confidence 0.3
 
 # Enable face tracking to maintain detection
-python dataset_preprocessing_1.py --enable_tracking True
+python dataset_preprocessing_1.py --min_tracking_confidence 0.3
 
 # Use previous frame landmarks for interpolation
-python dataset_preprocessing_1.py --interpolate_missing True
+# (This is enabled by default in the code)
 ```
 
 **Advanced Solutions:**
 - **Manual inspection** of problematic videos
 - **Skip videos** with persistent detection failures
-- Use **ensemble of detectors** for robustness
 - **Upscale low-resolution videos** before detection
+- **Check video quality** - ensure faces are visible
 
-#### 4. Synchronization Issues
+#### 5. Synchronization Issues
 
 **Symptoms:**
 - PPG and video signals don't align
@@ -609,7 +679,7 @@ aligned_video, aligned_ppg = align_with_correlation(video, ppg, max_offset=1.0)
 - Use **ECG as reference** for more accurate alignment
 - **Interpolate signals** to match sampling rates
 
-#### 5. File Not Found Errors
+#### 6. File Not Found Errors
 
 **Symptoms:**
 - `FileNotFoundError: [Errno 2] No such file or directory`
@@ -635,63 +705,9 @@ ls -la /path/to/ppg | head -20
 python dataset_preprocessing_1.py --input_path /absolute/path/to/videos
 ```
 
-**Advanced Solutions:**
-- **Symlink missing files** to expected locations
-- **Re-download** corrupted files
-- **Verify checksums** of downloaded files
-- **Update paths** in configuration files
-
-#### 6. Dependency Conflicts
-
-**Symptoms:**
-- `ImportError: cannot import name X`
-- `ModuleNotFoundError: No module named X`
-- Version conflicts between packages
-
-**Solutions:**
-
-```bash
-# Create fresh virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install exact versions
-pip install face_alignment==1.4.1 opencv-python-headless==4.9.0.80
-
-# Check installed versions
-pip list | grep -E "(face|opencv|numpy|torch)"
-```
-
-**Advanced Solutions:**
-- Use **requirements.txt** for consistent environment
-- Use **conda** for better dependency management
-- **Downgrade conflicting packages**
-- **Check CUDA compatibility** for GPU packages
-
-### Error Logging and Debugging
-
-All preprocessing scripts log errors to `errors.csv`:
-
-```csv
-video_file,error_type,error_msg,timestamp
-/path/to/video_001.avi,AssertionError,No face detected,2025-01-15 10:30:45
-/path/to/video_002.avi,ValueError,Invalid frame shape,2025-01-15 10:31:22
-```
-
-**Debug Mode:**
-```bash
-python dataset_preprocessing_1.py --debug True --verbose True
-```
-
-This will:
-- Save intermediate results
-- Generate visualization of problematic frames
-- Print detailed timing information
-- Create stack traces for errors
-
 ## ⚡ Performance Tips
 
-### Faster Preprocessing
+### Faster Preprocessing with MediaPipe
 
 #### 1. Parallel Processing
 
@@ -703,14 +719,17 @@ python dataset_preprocessing_1.py --num_workers -1
 # Use a job scheduler (SLURM, PBS, etc.)
 ```
 
-#### 2. GPU Acceleration
+#### 2. MediaPipe Optimization
 
 ```bash
-# Use CUDA for face detection
-python dataset_preprocessing_1.py --device cuda:0
+# Use lower confidence thresholds for speed
+python dataset_preprocessing_1.py --min_detection_confidence 0.3 --min_tracking_confidence 0.3
 
-# Use TensorRT for optimized inference
-python dataset_preprocessing_1.py --engine tensorrt
+# Use IMAGE mode for single images (less overhead)
+python dataset_preprocessing_1.py --running_mode IMAGE
+
+# Disable blendshapes if not needed
+# (Modify in face_utils.py: output_face_blendshapes=False)
 ```
 
 #### 3. Memory Optimization
@@ -802,30 +821,13 @@ scaler.step(optimizer)
 scaler.update()
 ```
 
-#### 3. Gradient Accumulation
-
-```python
-# Accumulate gradients for larger effective batch size
-accumulation_steps = 4
-
-for i, batch in enumerate(dataloader):
-    outputs = model(batch['video'])
-    loss = criterion(outputs, batch['ppg'])
-    loss = loss / accumulation_steps
-    loss.backward()
-    
-    if (i + 1) % accumulation_steps == 0:
-        optimizer.step()
-        optimizer.zero_grad()
-```
-
 ## 🚀 Full Pipeline Example
 
-### End-to-End Python Code
+### End-to-End Python Code with MediaPipe
 
 ```python
 """
-Complete preprocessing pipeline example.
+Complete preprocessing pipeline example using MediaPipe.
 This script demonstrates the full preprocessing workflow from raw data to training-ready samples.
 """
 
@@ -835,9 +837,9 @@ import pandas as pd
 from datasets import load_dataset
 from tqdm import tqdm
 import cv2
-import face_alignment
-from scipy.signal import butter, filtfilt
-from sklearn.model_selection import train_test_split
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 # Configuration
 CONFIG = {
@@ -854,74 +856,88 @@ CONFIG = {
     'num_workers': 4,
     'train_ratio': 0.8,
     'val_ratio': 0.1,
-    'test_ratio': 0.1
+    'test_ratio': 0.1,
+    'min_detection_confidence': 0.5,
+    'min_tracking_confidence': 0.5
 }
 
 # Ensure output directory exists
 os.makedirs(CONFIG['output_path'], exist_ok=True)
 
 # ============================================================================
-# Step 1: Load Dataset
+# Step 1: Initialize MediaPipe Face Landmarker
 # ============================================================================
-print("Loading dataset...")
-dataset = load_dataset("Bgeorge/mcd_rppg", split="train")
-print(f"Loaded {len(dataset)} samples")
+print("Initializing MediaPipe Face Landmarker...")
+
+base_options = python.BaseOptions(model_asset_path=None)
+options = vision.FaceLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.VIDEO,
+    num_faces=1,
+    min_detection_confidence=CONFIG['min_detection_confidence'],
+    min_tracking_confidence=CONFIG['min_tracking_confidence'],
+    output_face_blendshapes=False,  # Disable if not needed
+    output_facial_transformation_matrixes=False
+)
+detector = vision.FaceLandmarker.create_from_options(options)
+
+print("MediaPipe Face Landmarker initialized")
+print(f"Model: Face Mesh with {468} landmarks")
 
 # ============================================================================
-# Step 2: Initialize Face Detector
-# ============================================================================
-print("Initializing face detector...")
-fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device='cuda:0')
-print("Face detector initialized")
-
-# ============================================================================
-# Step 3: Preprocessing Functions
+# Step 2: Helper Functions
 # ============================================================================
 
-def detect_face(frame):
-    """Detect face and extract landmarks."""
-    preds = fa.get_landmarks(frame)
-    if preds is None:
-        return None
-    return preds[0].astype('int16')
+def detect_face_landmarks(frame):
+    """Detect face landmarks using MediaPipe."""
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+    result = detector.detect_for_video(mp_image, 0)  # frame_timestamp=0
+    
+    if result and result.face_landmarks:
+        face_landmarks = result.face_landmarks[0]
+        landmarks = np.array([
+            (lm.x * frame.shape[1], lm.y * frame.shape[0])
+            for lm in face_landmarks
+        ], dtype=np.float32)
+        return landmarks
+    return None
 
-def crop_face(frame, landmarks):
+def find_bbox(landmarks):
+    """Find bounding box from landmarks."""
+    x_min = landmarks[:, 0].min()
+    x_max = landmarks[:, 0].max()
+    y_min = landmarks[:, 1].min()
+    y_max = landmarks[:, 1].max()
+    return int(x_min), int(x_max), int(y_min), int(y_max)
+
+def crop_face(frame, bbox, padding=20):
     """Crop face region from frame."""
-    x_min, x_max = landmarks[:, 0].min(), landmarks[:, 0].max()
-    y_min, y_max = landmarks[:, 1].min(), landmarks[:, 1].max()
-    
-    # Add padding
-    pad = 20
-    x_min = max(0, x_min - pad)
-    x_max = min(frame.shape[1], x_max + pad)
-    y_min = max(0, y_min - pad)
-    y_max = min(frame.shape[0], y_max + pad)
-    
+    x_min, x_max, y_min, y_max = bbox
+    x_min = max(0, x_min - padding)
+    x_max = min(frame.shape[1], x_max + padding)
+    y_min = max(0, y_min - padding)
+    y_max = min(frame.shape[0], y_max + padding)
     return frame[y_min:y_max, x_min:x_max]
 
 def bandpass_filter(signal, low_freq, high_freq, fs, order=4):
     """Apply bandpass filter to signal."""
+    from scipy.signal import butter, filtfilt
     nyquist = 0.5 * fs
     low = low_freq / nyquist
     high = high_freq / nyquist
-    
     b, a = butter(order, [low, high], btype='band')
     filtered = filtfilt(b, a, signal)
     return filtered
 
 def preprocess_ppg(ppg_signal):
     """Preprocess PPG signal."""
-    # Bandpass filter
     ppg_filtered = bandpass_filter(
-        ppg_signal, 
-        CONFIG['ppg_low_freq'], 
-        CONFIG['ppg_high_freq'], 
+        ppg_signal,
+        CONFIG['ppg_low_freq'],
+        CONFIG['ppg_high_freq'],
         CONFIG['ppg_rate']
     )
-    
-    # Normalize
     ppg_normalized = (ppg_filtered - ppg_filtered.mean()) / ppg_filtered.std()
-    
     return ppg_normalized
 
 def extract_chunks(video, ppg, window_size, stride):
@@ -931,22 +947,15 @@ def extract_chunks(video, ppg, window_size, stride):
     
     num_frames = video.shape[0]
     ppg_length = ppg.shape[0]
-    
-    # Calculate PPG samples per frame
     ppg_per_frame = CONFIG['ppg_rate'] / CONFIG['frame_rate']
     
     for start in range(0, num_frames - window_size + 1, stride):
         end = start + window_size
-        
-        # Get video chunk
         video_chunk = video[start:end]
-        
-        # Get corresponding PPG chunk
         ppg_start = int(start * ppg_per_frame)
         ppg_end = int(end * ppg_per_frame)
         ppg_chunk = ppg[ppg_start:ppg_end]
         
-        # Ensure PPG chunk has correct length
         if len(ppg_chunk) < window_size:
             continue
         if len(ppg_chunk) > window_size:
@@ -958,9 +967,16 @@ def extract_chunks(video, ppg, window_size, stride):
     return np.array(chunks), np.array(ppg_chunks)
 
 # ============================================================================
+# Step 3: Load Dataset
+# ============================================================================
+print("Loading dataset...")
+dataset = load_dataset("Bgeorge/mcd_rppg", split="train")
+print(f"Loaded {len(dataset)} samples")
+
+# ============================================================================
 # Step 4: Process Dataset
 # ============================================================================
-print("Processing dataset...")
+print("Processing dataset with MediaPipe...")
 
 all_chunks = []
 all_ppg_chunks = []
@@ -982,9 +998,10 @@ for i in tqdm(range(min(N_SAMPLES, len(dataset)))):
         'video_file': sample.get('video_file', f'video_{i:03d}.avi')
     }
     
-    # Process each frame
+    # Process each frame with MediaPipe
     processed_frames = []
     landmarks_list = []
+    prev_landmarks = None
     
     for frame_idx, frame in enumerate(video):
         # Convert to numpy if needed
@@ -995,21 +1012,27 @@ for i in tqdm(range(min(N_SAMPLES, len(dataset)))):
         if frame.dtype != np.uint8:
             frame = (frame * 255).astype(np.uint8)
         
-        # Detect face
-        landmarks = detect_face(frame)
+        # Detect face landmarks
+        landmarks = detect_face_landmarks(frame)
         
         if landmarks is None:
-            # Skip frame if no face detected
-            continue
+            if prev_landmarks is not None:
+                # Use previous landmarks if detection fails
+                landmarks = prev_landmarks
+            else:
+                # Skip frame if no face detected in first frame
+                continue
         
         # Crop face
-        face = crop_face(frame, landmarks)
+        bbox = find_bbox(landmarks)
+        face = crop_face(frame, bbox)
         
         # Resize to consistent size
         face = cv2.resize(face, (128, 128))
         
         processed_frames.append(face)
         landmarks_list.append(landmarks)
+        prev_landmarks = landmarks.copy()
     
     if len(processed_frames) < CONFIG['window_size']:
         # Skip video if too short after filtering
@@ -1024,7 +1047,7 @@ for i in tqdm(range(min(N_SAMPLES, len(dataset)))):
     
     # Extract chunks
     video_chunks, ppg_chunks = extract_chunks(
-        processed_video, 
+        processed_video,
         ppg_processed,
         CONFIG['window_size'],
         CONFIG['stride']
@@ -1039,6 +1062,7 @@ for i in tqdm(range(min(N_SAMPLES, len(dataset)))):
         chunk_metadata = metadata.copy()
         chunk_metadata['chunk_idx'] = j
         chunk_metadata['start_frame'] = j * CONFIG['stride']
+        chunk_metadata['landmark_model'] = 'MediaPipe Face Mesh (468 points)'
         all_metadata.append(chunk_metadata)
 
 print(f"Processed {len(all_chunks)} chunks from {N_SAMPLES} samples")
@@ -1067,10 +1091,12 @@ print(f"Saved {len(all_chunks)} chunks to {CONFIG['output_path']}")
 # ============================================================================
 print("Creating train/val/test splits...")
 
+from sklearn.model_selection import train_test_split
+
 # Split by subject to avoid data leakage
 subject_ids = metadata_df['subject_id'].unique()
 train_subjects, test_subjects = train_test_split(
-    subject_ids, 
+    subject_ids,
     test_size=CONFIG['test_ratio'] + CONFIG['val_ratio'],
     random_state=42
 )
@@ -1114,26 +1140,26 @@ sample_idx = 0
 print(f"\nSample {sample_idx}:")
 print(f"  Video chunk shape: {video_chunks[sample_idx].shape}")
 print(f"  PPG chunk shape: {ppg_chunks[sample_idx].shape}")
-print(f"  Metadata: {metadata_df.iloc[sample_idx].to_dict()}")
+print(f"  Landmark model: {metadata_df.iloc[sample_idx]['landmark_model']}")
 
-print("\n✅ Preprocessing pipeline completed successfully!")
+print("\n✅ Preprocessing pipeline with MediaPipe completed successfully!")
 ```
 
 ### Running the Full Pipeline
 
 ```bash
-# Save the script above as run_preprocessing.py
-python run_preprocessing.py
+# Save the script above as run_preprocessing_mediapipe.py
+python run_preprocessing_mediapipe.py
 
 # Or run with custom configuration
-python run_preprocessing.py --output_path /path/to/output --num_samples 100
+python run_preprocessing_mediapipe.py --output_path /path/to/output --num_samples 100
 ```
 
 ## 📦 Preprocessed Dataset Output
 
 ### Summary: Preprocessed Dataset Ready for Training
 
-After running the preprocessing pipeline, you will have the following outputs:
+After running the preprocessing pipeline with MediaPipe, you will have the following outputs:
 
 ```
 mcd_rppg_processed/
@@ -1147,7 +1173,7 @@ mcd_rppg_processed/
 └── errors.csv                 # List of errors encountered
 ```
 
-### Dataset Statistics
+### Dataset Statistics (with MediaPipe)
 
 | Metric | Value |
 |--------|-------|
@@ -1155,26 +1181,28 @@ mcd_rppg_processed/
 | **Chunk Duration** | 8.5 seconds (256 frames @ 30 FPS) |
 | **Video Shape** | (256, 128, 128, 3) |
 | **PPG Shape** | (256,) |
+| **Landmarks per Frame** | 468 points (MediaPipe Face Mesh) |
 | **Total Size** | ~50-100 GB (compressed) |
 
-### Example for Inference Preprocessing
+### Example for Inference Preprocessing with MediaPipe
 
-For inference on new videos, use the following preprocessing:
+For inference on new videos using MediaPipe:
 
 ```python
 """
-Inference preprocessing example.
+Inference preprocessing example using MediaPipe.
 This demonstrates how to preprocess a new video for inference using a trained model.
 """
 
 import cv2
 import numpy as np
-import face_alignment
-from scipy.signal import butter, filtfilt
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 
 def preprocess_for_inference(video_path, window_size=256):
     """
-    Preprocess a video for inference.
+    Preprocess a video for inference using MediaPipe.
     
     Args:
         video_path: Path to video file
@@ -1183,45 +1211,67 @@ def preprocess_for_inference(video_path, window_size=256):
     Returns:
         chunks: List of preprocessed video chunks
     """
-    # Initialize face detector
-    fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device='cuda:0')
+    # Initialize MediaPipe Face Landmarker
+    base_options = python.BaseOptions(model_asset_path=None)
+    options = vision.FaceLandmarkerOptions(
+        base_options=base_options,
+        running_mode=vision.RunningMode.VIDEO,
+        num_faces=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    detector = vision.FaceLandmarker.create_from_options(options)
     
     # Load video
     cap = cv2.VideoCapture(video_path)
     frames = []
     
+    frame_idx = 0
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         
-        # Convert to RGB
+        # Convert to RGB (MediaPipe expects RGB)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frames.append(frame)
+        frame_idx += 1
     
     cap.release()
     video = np.array(frames)
     
-    # Process video
+    # Process video with MediaPipe
     processed_frames = []
+    prev_landmarks = None
     
     for frame in video:
-        # Detect face
-        preds = fa.get_landmarks(frame)
-        if preds is None:
+        # Detect face landmarks
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+        result = detector.detect_for_video(mp_image, frame_idx)
+        
+        if result and result.face_landmarks:
+            face_landmarks = result.face_landmarks[0]
+            landmarks = np.array([
+                (lm.x * frame.shape[1], lm.y * frame.shape[0])
+                for lm in face_landmarks
+            ], dtype=np.float32)
+            prev_landmarks = landmarks.copy()
+        elif prev_landmarks is not None:
+            landmarks = prev_landmarks
+        else:
             continue
         
-        landmarks = preds[0].astype('int16')
-        
         # Crop face
-        x_min, x_max = landmarks[:, 0].min(), landmarks[:, 0].max()
-        y_min, y_max = landmarks[:, 1].min(), landmarks[:, 1].max()
+        x_min = landmarks[:, 0].min()
+        x_max = landmarks[:, 0].max()
+        y_min = landmarks[:, 1].min()
+        y_max = landmarks[:, 1].max()
         
         pad = 20
-        x_min = max(0, x_min - pad)
-        x_max = min(frame.shape[1], x_max + pad)
-        y_min = max(0, y_min - pad)
-        y_max = min(frame.shape[0], y_max + pad)
+        x_min = max(0, int(x_min) - pad)
+        x_max = min(frame.shape[1], int(x_max) + pad)
+        y_min = max(0, int(y_min) - pad)
+        y_max = min(frame.shape[0], int(y_max) + pad)
         
         face = frame[y_min:y_max, x_min:x_max]
         face = cv2.resize(face, (128, 128))
@@ -1248,6 +1298,7 @@ chunks = preprocess_for_inference(video_path)
 
 print(f"Processed {len(chunks)} chunks from {video_path}")
 print(f"Chunk shape: {chunks[0].shape}")
+print(f"Using MediaPipe Face Mesh with 468 landmarks")
 
 # Now you can run inference:
 # predictions = model.predict(chunks)
@@ -1258,6 +1309,7 @@ print(f"Chunk shape: {chunks[0].shape}")
 - **[DATASET.md](../DATASET.md)** - Complete dataset documentation
 - **[README.md](../README.md)** - Main repository documentation
 - **[rppglib/](../rppglib/)** - Core library with utilities
+- **[MediaPipe Documentation](https://developers.google.com/mediapipe)** - Official MediaPipe docs
 
 ## 🤝 Support
 
@@ -1268,6 +1320,7 @@ For issues or questions related to preprocessing:
 3. **Include:**
    - Error messages
    - Python version
+   - MediaPipe version (`python -c "import mediapipe as mp; print(mp.__version__)"`)
    - Package versions
    - Hardware specifications
    - Steps to reproduce
@@ -1277,3 +1330,4 @@ For issues or questions related to preprocessing:
 **Last Updated:** September 2025
 **Maintainers:** CrisChir, Bgeorge
 **License:** MIT
+**Face Detection:** MediaPipe Tasks API (non-deprecated)

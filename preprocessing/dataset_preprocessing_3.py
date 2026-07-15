@@ -3,7 +3,7 @@
 MCD-rPPG Dataset Preprocessing Script 3
 
 This script processes the third set of videos (camera 3 - mobile phone).
-It performs face detection, cropping, and saves processed faces and landmarks.
+It performs face detection using MediaPipe, cropping, and saves processed faces and landmarks.
 
 Usage:
     python dataset_preprocessing_3.py [--input_path INPUT] [--output_path OUTPUT] [--num_workers N]
@@ -21,6 +21,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import cv2
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 from tqdm import tqdm
 
 # Add parent directory to path for imports
@@ -38,7 +42,7 @@ except ImportError as e:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Preprocess MCD-rPPG dataset - Camera 3 (Mobile Phone)',
+        description='Preprocess MCD-rPPG dataset - Camera 3 (Mobile Phone) using MediaPipe',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -70,6 +74,10 @@ def parse_args():
                         help='Minimum face size in pixels')
     parser.add_argument('--max_face_size', type=int, default=512,
                         help='Maximum face size in pixels')
+    parser.add_argument('--min_detection_confidence', type=float, default=0.5,
+                        help='Minimum face detection confidence (0-1)')
+    parser.add_argument('--min_tracking_confidence', type=float, default=0.5,
+                        help='Minimum face tracking confidence (0-1)')
     parser.add_argument('--skip_existing', action='store_true', default=True,
                         help='Skip already processed files')
     parser.add_argument('--verbose', action='store_true', default=False,
@@ -156,15 +164,14 @@ def get_video_list(args):
     return videos
 
 
-def process_single_video(video_file, args, errors, face_detector=None):
+def process_single_video(video_file, args, errors):
     """
-    Process a single video file.
+    Process a single video file using MediaPipe.
     
     Args:
         video_file: Path to video file
         args: Command line arguments
         errors: DataFrame to log errors
-        face_detector: Optional pre-initialized face detector
     
     Returns:
         True if successful, False otherwise
@@ -204,11 +211,13 @@ def process_single_video(video_file, args, errors, face_detector=None):
             print(f"  Video shape: {video.shape}")
             print(f"  Video dtype: {video.dtype}")
         
-        # Process video (face detection and cropping)
+        # Process video using MediaPipe (face detection and cropping)
         processed_video, landmarks = rppglib.face_utils.process_video(
             video,
             min_face_size=args.min_face_size,
-            max_face_size=args.max_face_size
+            max_face_size=args.max_face_size,
+            min_detection_confidence=args.min_detection_confidence,
+            min_tracking_confidence=args.min_tracking_confidence
         )
         
         if args.debug:
@@ -225,10 +234,10 @@ def process_single_video(video_file, args, errors, face_detector=None):
         
         return True
         
-    except AssertionError as e:
+    except RuntimeError as e:
         error_row = {
             'video_file': video_file,
-            'error_type': 'AssertionError',
+            'error_type': 'RuntimeError',
             'error_msg': str(e)
         }
         errors = pd.concat([errors, pd.DataFrame([error_row])], ignore_index=True)
@@ -256,6 +265,7 @@ def main():
     print("=" * 80)
     print("MCD-rPPG Dataset Preprocessing Script 3")
     print(f"Camera: {args.camera_id} (Mobile Phone)")
+    print(f"Using: MediaPipe Face Landmark Detection")
     print(f"Input: {args.input_path}")
     print(f"Output: {args.output_path}")
     print("=" * 80)
@@ -274,6 +284,8 @@ def main():
     print(f"Starting from index: {args.start_idx}")
     if args.end_idx is not None:
         print(f"Ending at index: {args.end_idx}")
+    print(f"Min detection confidence: {args.min_detection_confidence}")
+    print(f"Min tracking confidence: {args.min_tracking_confidence}")
     print()
     
     # Process videos

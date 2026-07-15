@@ -11,13 +11,18 @@ The presented large-scale multimodal **MCD-rPPG dataset** is designed for **remo
 
 We also provide an efficient multi-task neural network model that estimates the pulse wave signal and other biomarkers from facial video in **real-time, even on a CPU**.
 
-## 📊 Repository Structure
+**Note:** This repository now uses **MediaPipe Tasks API** (non-deprecated) for face landmark detection with the 468-point face mesh model.
+
+## 📁 Repository Structure
 
 ```
 mcd_rppg/
 ├── README.md                    # Main documentation
 ├── DATASET.md                   # Dataset overview and metadata
+├── CONTRIBUTING.md              # Contribution guidelines
+├── LICENSE                      # MIT License
 ├── requirements.txt             # Python dependencies
+├── requirements-dev.txt         # Development dependencies
 ├── preprocessing/
 │   ├── README.md               # Preprocessing documentation
 │   ├── dataset_preprocessing_1.py
@@ -25,7 +30,8 @@ mcd_rppg/
 │   └── dataset_preprocessing_3.py
 ├── rppglib/                     # Core library
 │   ├── dataset.py              # Dataset loading utilities
-│   ├── face_utils.py           # Face detection and processing
+│   ├── data_utils.py           # Video and signal loading
+│   ├── face_utils.py           # Face detection using MediaPipe
 │   ├── processing.py           # Signal processing functions
 │   └── models/                 # Model implementations
 ├── *.ipynb                     # Training and evaluation notebooks
@@ -50,14 +56,11 @@ Using a virtual environment is recommended:
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install required packages
+# Install required packages (now using MediaPipe instead of face_alignment)
 pip install -r requirements.txt
 ```
 
-**Additional dependencies for preprocessing:**
-```bash
-pip install datasets huggingface_hub opencv-python-headless face-alignment tqdm
-```
+**Note:** The main dependency change is from `face_alignment` to `mediapipe>=0.10.11`. MediaPipe provides better performance and is actively maintained.
 
 ### 3. Download the Dataset
 
@@ -70,7 +73,18 @@ from datasets import load_dataset
 dataset = load_dataset("Bgeorge/mcd_rppg", split="train")
 ```
 
-### 4. Run Training or Inference
+### 4. Run Preprocessing
+
+The preprocessing now uses **MediaPipe's Face Landmark Detection task** (non-deprecated API):
+
+```bash
+# Process videos from all three cameras
+python preprocessing/dataset_preprocessing_1.py --input_path data/videos --output_path data/processed --camera_id 1
+python preprocessing/dataset_preprocessing_2.py --input_path data/videos --output_path data/processed --camera_id 2
+python preprocessing/dataset_preprocessing_3.py --input_path data/videos --output_path data/processed --camera_id 3
+```
+
+### 5. Run Training or Inference
 
 See the available notebooks:
 - `train_SCNN_8roi_mcd_rppg.ipynb` - Train our proposed SCNN model
@@ -83,6 +97,7 @@ See the available notebooks:
 
 - **[DATASET.md](DATASET.md)** - Complete dataset documentation including structure, size, biomarkers, and metadata
 - **[preprocessing/README.md](preprocessing/README.md)** - Detailed preprocessing pipeline documentation
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution guidelines
 
 ## 🎯 The MCD-rPPG Dataset
 
@@ -128,55 +143,21 @@ See the available notebooks:
 
 Our model achieves **real-time performance on CPU** while maintaining competitive accuracy.
 
-## 🔧 Usage Examples
+## 🔧 Face Detection Technology
 
-### Basic Dataset Loading
+This repository now uses **MediaPipe Tasks API** for face landmark detection:
 
-```python
-from datasets import load_dataset
+- ✅ **Non-deprecated API** - Uses the new `mediapipe.tasks` module
+- ✅ **468-point face mesh** - High-precision landmark detection
+- ✅ **Better performance** - Optimized for speed and accuracy
+- ✅ **Active maintenance** - Regularly updated by Google
+- ✅ **Cross-platform** - Works on CPU and GPU
 
-# Load the dataset
-dataset = load_dataset("Bgeorge/mcd_rppg", split="train")
-
-# Access first sample
-sample = dataset[0]
-print(f"Video shape: {sample['video'].shape}")
-print(f"PPG shape: {sample['ppg'].shape}")
-print(f"Metadata: {sample.keys()}")
-```
-
-### Preprocessing Pipeline
-
-```python
-from preprocessing.dataset_preprocessing_1 import process_video
-
-# Process a single video
-video_path = "path/to/video.avi"
-processed_video, landmarks = process_video(video_path)
-```
-
-### Training Example
-
-```python
-import torch
-from rppglib.dataset import RPPGDataset
-from rppglib.train import train_model
-
-# Load your configuration
-config = {
-    'window': 256,
-    'batch_size': 32,
-    'num_workers': 4,
-    'samples_per_video': 10
-}
-
-# Create dataset
-dataset = RPPGDataset(video_files, ppg_files, config, train=True)
-dataloader = dataset.to_dl()
-
-# Train model
-model = train_model(dataloader, config)
-```
+### MediaPipe Features Used:
+- `FaceLandmarker` - Face landmark detection task
+- `FaceLandmarkerOptions` - Configuration for landmark detection
+- `RunningMode.VIDEO` - Optimized for video processing
+- 468 facial landmarks for precise face tracking
 
 ## 📖 Citation
 
@@ -205,10 +186,7 @@ If you use the MCD-rPPG dataset or code from this repository, please cite our wo
   doi = {10.1145/3746027.3758255},
   booktitle = {Proceedings of the 33rd ACM International Conference on Multimedia},
   pages = {13053–13059},
-  numpages = {7},
-  keywords = {biosignals, rppg, telemedicine, video},
-  location = {Dublin, Ireland},
-  series = {MM '25}
+  numpages = {7}
 }
 ```
 
