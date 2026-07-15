@@ -1,0 +1,42 @@
+# Development dependencies
+# These are additional packages needed for development, testing, and documentation
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.0.0
+pytest-xdist>=3.0.0
+
+# Linting and formatting
+flake8>=6.0.0
+black>=24.0.0
+isort>=5.12.0
+mypy>=1.0.0
+
+# Type checking
+types-tqdm>=0.0.0
+types-PyYAML>=0.0.0
+
+# Documentation
+mkdocs>=1.5.0
+mkdocs-material>=9.0.0
+mkdocstrings>=0.24.0
+
+# Code quality
+pre-commit>=3.0.0
+
+# Notebook testing
+nbval>=0.10.0
+nbconvert>=7.0.0
+
+# Performance profiling
+cProfile>=0.0.0
+line-profiler>=4.0.0
+memory-profiler>=0.61.0
+
+# Visualization (for debugging)
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# Additional dataset utilities
+huggingface_hub>=0.20.0
+ datasets>=2.18.0
