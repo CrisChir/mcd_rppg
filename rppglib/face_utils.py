@@ -27,6 +27,123 @@ FACE_LANDMARKER_TASK_PATH = None  # Use default bundled model
 NUM_LANDMARKS = 468
 
 
+class OneEuroFilter:
+    """
+    One Euro Filter for temporal smoothing of landmark coordinates.
+    
+    This is a simple, efficient filter that provides smooth results with minimal lag.
+    It's particularly effective for reducing jitter in real-time applications.
+    
+    Reference: https://cristal.univ-lille.fr/~casiez/1euro/
+    
+    Args:
+        freq: Sampling frequency (Hz)
+        min_cutoff: Minimum cutoff frequency for the low-pass filter
+        beta: Smoothing factor (higher = more smoothing)
+        d_cutoff: Derivative cutoff frequency
+    """
+    
+    def __init__(
+        self,
+        freq: float = 30.0,
+        min_cutoff: float = 1.0,
+        beta: float = 0.1,
+        d_cutoff: float = 1.0
+    ):
+        self.freq = freq
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        
+        # Filter state
+        self.x_prev = None
+        self.dx_prev = None
+        self.t_prev = None
+    
+    def __call__(self, x: float, t: Optional[float] = None) -> float:
+        """
+        Apply one-euro filter to a single value.
+        
+        Args:
+            x: Input value
+            t: Timestamp (optional, for adaptive filtering)
+        
+        Returns:
+            Filtered value
+        """
+        if self.x_prev is None:
+            # First call - initialize state
+            self.x_prev = x
+            self.dx_prev = 0.0
+            self.t_prev = t
+            return x
+        
+        # Calculate time step
+        if t is not None and self.t_prev is not None:
+            te = t - self.t_prev
+        else:
+            te = 1.0 / self.freq
+        
+        # Calculate cutoff frequency based on speed
+        if self.dx_prev is not None:
+            speed = abs(self.dx_prev) * self.freq
+            cutoff = self.min_cutoff + self.beta * speed
+        else:
+            cutoff = self.min_cutoff
+        
+        # Calculate alpha (smoothing factor)
+        alpha = self._calculate_alpha(cutoff, te)
+        
+        # Apply low-pass filter
+        x_filtered = alpha * x + (1 - alpha) * self.x_prev
+        
+        # Update state
+        self.x_prev = x_filtered
+        self.dx_prev = (x_filtered - self.x_prev) / te if te > 0 else 0.0
+        self.t_prev = t
+        
+        return x_filtered
+    
+    def _calculate_alpha(self, cutoff: float, te: float) -> float:
+        """Calculate alpha for low-pass filter."""
+        if cutoff <= 0 or te <= 0:
+            return 1.0
+        
+        rc = 1.0 / (2 * np.pi * cutoff)
+        alpha = 1.0 / (rc / te + 1.0)
+        return alpha
+
+
+class MovingAverageFilter:
+    """
+    Simple moving average filter for temporal smoothing.
+    
+    Args:
+        window_size: Size of the moving average window
+    """
+    
+    def __init__(self, window_size: int = 5):
+        self.window_size = window_size
+        self.buffer = []
+    
+    def __call__(self, x: float) -> float:
+        """
+        Apply moving average filter to a single value.
+        
+        Args:
+            x: Input value
+        
+        Returns:
+            Filtered value
+        """
+        self.buffer.append(x)
+        
+        if len(self.buffer) > self.window_size:
+            self.buffer.pop(0)
+        
+        return np.mean(self.buffer)
+
+
 class MediaPipeFaceLandmarker:
     """
     Face landmark detector using MediaPipe's Face Landmark Detection task.
@@ -37,13 +154,23 @@ class MediaPipeFaceLandmarker:
         base_options: Base options for the task
         running_mode: Running mode (IMAGE, VIDEO, or LIVE_STREAM)
         num_faces: Maximum number of faces to detect
+        min_face_detection_confidence: Minimum confidence for face detection
+        min_face_presence_confidence: Minimum confidence for face presence
+        min_tracking_confidence: Minimum confidence for tracking
+        enable_smoothing: Whether to apply temporal smoothing to landmarks
+        smoothing_window: Window size for moving average (if enable_smoothing=True)
     """
     
     def __init__(
         self,
         base_options: Optional[python.BaseOptions] = None,
         running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
-        num_faces: int = 1
+        num_faces: int = 1,
+        min_face_detection_confidence: float = 0.5,
+        min_face_presence_confidence: float = 0.5,
+        min_tracking_confidence: float = 0.5,
+        enable_smoothing: bool = True,
+        smoothing_window: int = 5
     ):
         """Initialize MediaPipe face landmark detector."""
         if base_options is None:
@@ -55,6 +182,9 @@ class MediaPipeFaceLandmarker:
             base_options=base_options,
             running_mode=running_mode,
             num_faces=num_faces,
+            min_face_detection_confidence=min_face_detection_confidence,
+            min_face_presence_confidence=min_face_presence_confidence,
+            min_tracking_confidence=min_tracking_confidence,
             output_face_blendshapes=True,
             output_facial_transformation_matrixes=True
         )
@@ -63,6 +193,13 @@ class MediaPipeFaceLandmarker:
         self.running_mode = running_mode
         self.prev_preds = np.zeros((NUM_LANDMARKS, 2), dtype='float32')
         self.frame_count = 0
+        self.enable_smoothing = enable_smoothing
+        
+        # Initialize smoothing filters for each landmark coordinate
+        if enable_smoothing:
+            # Use moving average for simplicity and efficiency
+            self.x_filters = [MovingAverageFilter(smoothing_window) for _ in range(NUM_LANDMARKS)]
+            self.y_filters = [MovingAverageFilter(smoothing_window) for _ in range(NUM_LANDMARKS)]
     
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -99,6 +236,12 @@ class MediaPipeFaceLandmarker:
                 frame_width, frame_height = frame.shape[1], frame.shape[0]
                 points = np.array([(lm.x * frame_width, lm.y * frame_height) for lm in face_landmarks], dtype='float32')
                 
+                # Apply temporal smoothing if enabled
+                if self.enable_smoothing:
+                    for i in range(NUM_LANDMARKS):
+                        points[i, 0] = self.x_filters[i](points[i, 0])
+                        points[i, 1] = self.y_filters[i](points[i, 1])
+                
                 # Update previous landmarks
                 self.prev_preds = points.copy()
                 
@@ -115,7 +258,12 @@ class MediaPipeFaceLandmarker:
 def detect_landmarks(
     video: np.ndarray,
     running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
-    num_faces: int = 1
+    num_faces: int = 1,
+    min_face_detection_confidence: float = 0.5,
+    min_face_presence_confidence: float = 0.5,
+    min_tracking_confidence: float = 0.5,
+    enable_smoothing: bool = True,
+    smoothing_window: int = 5
 ) -> np.ndarray:
     """
     Detect facial landmarks for all frames in a video using MediaPipe.
@@ -124,6 +272,11 @@ def detect_landmarks(
         video: Input video as numpy array of shape (T, H, W, 3)
         running_mode: MediaPipe running mode
         num_faces: Maximum number of faces to detect
+        min_face_detection_confidence: Minimum confidence for face detection
+        min_face_presence_confidence: Minimum confidence for face presence
+        min_tracking_confidence: Minimum confidence for tracking
+        enable_smoothing: Whether to apply temporal smoothing to landmarks
+        smoothing_window: Window size for moving average (if enable_smoothing=True)
     
     Returns:
         Landmarks array of shape (T, 468, 2) containing (x, y) coordinates
@@ -133,7 +286,12 @@ def detect_landmarks(
     """
     detector = MediaPipeFaceLandmarker(
         running_mode=running_mode,
-        num_faces=num_faces
+        num_faces=num_faces,
+        min_face_detection_confidence=min_face_detection_confidence,
+        min_face_presence_confidence=min_face_presence_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+        enable_smoothing=enable_smoothing,
+        smoothing_window=smoothing_window
     )
     
     landmarks = []
@@ -281,7 +439,12 @@ def process_video(
     video: np.ndarray,
     min_face_size: int = 64,
     max_face_size: int = 512,
-    running_mode: vision.RunningMode = vision.RunningMode.VIDEO
+    running_mode: vision.RunningMode = vision.RunningMode.VIDEO,
+    min_face_detection_confidence: float = 0.5,
+    min_face_presence_confidence: float = 0.5,
+    min_tracking_confidence: float = 0.5,
+    enable_smoothing: bool = True,
+    smoothing_window: int = 5
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Process a video by detecting faces, cropping to face region, and applying mask.
@@ -297,6 +460,11 @@ def process_video(
         min_face_size: Minimum face size in pixels (for validation)
         max_face_size: Maximum face size in pixels (for validation)
         running_mode: MediaPipe running mode
+        min_face_detection_confidence: Minimum confidence for face detection
+        min_face_presence_confidence: Minimum confidence for face presence
+        min_tracking_confidence: Minimum confidence for tracking
+        enable_smoothing: Whether to apply temporal smoothing to landmarks
+        smoothing_window: Window size for moving average (if enable_smoothing=True)
     
     Returns:
         Tuple of (processed_video, landmarks):
@@ -312,7 +480,12 @@ def process_video(
     # Detect landmarks using MediaPipe
     landmarks = detect_landmarks(
         video,
-        running_mode=running_mode
+        running_mode=running_mode,
+        min_face_detection_confidence=min_face_detection_confidence,
+        min_face_presence_confidence=min_face_presence_confidence,
+        min_tracking_confidence=min_tracking_confidence,
+        enable_smoothing=enable_smoothing,
+        smoothing_window=smoothing_window
     )
     
     # Find bounding box
